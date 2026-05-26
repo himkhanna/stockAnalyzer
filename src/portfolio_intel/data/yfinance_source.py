@@ -20,7 +20,7 @@ from .models import NewsItem, Quote
 
 class YFinanceSource(DataSource):
     # yfinance covers all three of these via ticker suffixes.
-    _SUPPORTED = {Market.US, Market.NSE, Market.BSE}
+    _SUPPORTED = {Market.US, Market.NSE, Market.BSE, Market.DFM, Market.ADX}
 
     def __init__(self) -> None:
         try:
