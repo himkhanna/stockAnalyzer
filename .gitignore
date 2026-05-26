@@ -14,3 +14,4 @@ venv/
 .ticker_cache.json
 .upload.csv
 digests/
+.rows_cache.pkl

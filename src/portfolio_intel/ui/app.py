@@ -19,6 +19,8 @@ Design choices, informed by CLAUDE.md and the user's downside-protection lens:
 """
 from __future__ import annotations
 
+import pickle
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date as date_, datetime
@@ -258,6 +260,50 @@ def _source() -> YFinanceSource:
     return YFinanceSource()
 
 
+# ---------------- Disk persistence for the rows cache ----------------
+#
+# Streamlit's session_state lives only as long as the browser session, so a
+# page refresh or server restart causes a re-fetch. We pickle the computed
+# rows to a small file in cwd so the dashboard loads instantly on cold start
+# and only refetches when the user clicks Refresh (or the cache ages past
+# ROWS_CACHE_TTL_S, in which case we still show the stale rows AND surface
+# a banner offering a refresh — never blocking the page on first paint).
+
+ROWS_CACHE_FILE = Path(".rows_cache.pkl")
+ROWS_CACHE_TTL_S = 60 * 60  # 1 hour — quotes from market hours are fresher than this anyway
+
+
+def _load_rows_disk() -> dict | None:
+    if not ROWS_CACHE_FILE.exists():
+        return None
+    try:
+        with ROWS_CACHE_FILE.open("rb") as f:
+            return pickle.load(f)
+    except (pickle.UnpicklingError, EOFError, AttributeError, ImportError):
+        # Schema drift or corruption — drop the file, treat as cold.
+        try:
+            ROWS_CACHE_FILE.unlink()
+        except OSError:
+            pass
+        return None
+
+
+def _save_rows_disk(payload: dict) -> None:
+    try:
+        with ROWS_CACHE_FILE.open("wb") as f:
+            pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+    except OSError:
+        pass  # caching is best-effort
+
+
+def _invalidate_rows_cache() -> None:
+    st.session_state.pop("rows_cache", None)
+    try:
+        ROWS_CACHE_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 # ---------------- Data fetch ----------------
 
 def _today_dir(out_dir: Path) -> Path:
@@ -356,7 +402,7 @@ def _build_rows(items: list[BatchItem], period: str) -> list[CardRow]:
 
 # ---------------- Card renderer ----------------
 
-def _render_card(row: CardRow, out_dir: Path, model: str, *, attention: bool = False) -> None:
+def _render_card(row: CardRow, out_dir: Path, model: str, *, attention: bool = False, scope: str = "grid") -> None:
     c = row.card
     if c.get("error"):
         st.markdown(
@@ -449,7 +495,7 @@ def _render_card(row: CardRow, out_dir: Path, model: str, *, attention: bool = F
             st.caption("No full digest cached for today.")
             if st.button(
                 f"Generate digest for {symbol}.{market_code}",
-                key=f"gen_{symbol}_{market_code}",
+                key=f"gen_{scope}_{symbol}_{market_code}",
             ):
                 with st.spinner("Running LLM synthesis..."):
                     market = Market.from_code(market_code)
@@ -621,8 +667,13 @@ tab_dash, tab_lookup, tab_portfolio = st.tabs(["📈 Dashboard", "🔍 Lookup", 
 with tab_dash:
     items = items_from_portfolio(store)
 
-    # Build rows ONCE per (portfolio, period) and stash in session_state.
+    # Build rows ONCE per (portfolio, period). Cached two layers deep:
+    #   - st.session_state (fast, in-memory, lost on page reload / restart)
+    #   - .rows_cache.pkl on disk (survives reload + restart)
+    # The page never blocks on a stale cache; it shows what it has and
+    # surfaces a "stale" banner if the disk cache is older than the TTL.
     loaded_at: Optional[str] = None
+    stale_age_s: Optional[float] = None
     rows: list[CardRow] = []
     if items:
         fingerprint = (
@@ -630,16 +681,31 @@ with tab_dash:
             tuple(sorted((it.symbol, it.market.code) for it in items)),
         )
         cached = st.session_state.get("rows_cache")
+        if not cached or cached.get("fp") != fingerprint:
+            disk = _load_rows_disk()
+            if disk and disk.get("fp") == fingerprint:
+                cached = disk
+                st.session_state["rows_cache"] = disk
+
         if cached and cached.get("fp") == fingerprint:
             rows = cached["rows"]
             loaded_at = cached.get("loaded_at", "")
+            saved_ts = cached.get("saved_ts", 0.0)
+            if saved_ts:
+                stale_age_s = time.time() - saved_ts
         else:
-            with st.spinner(f"loading {len(items)} holding(s)..."):
+            with st.spinner(f"loading {len(items)} holding(s) for the first time..."):
                 rows = _build_rows(items, period)
-            loaded_at = datetime.now().strftime("%H:%M")
-            st.session_state["rows_cache"] = {
-                "fp": fingerprint, "rows": rows, "loaded_at": loaded_at,
+            payload = {
+                "fp": fingerprint,
+                "rows": rows,
+                "loaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "saved_ts": time.time(),
             }
+            st.session_state["rows_cache"] = payload
+            _save_rows_disk(payload)
+            loaded_at = payload["loaded_at"]
+            stale_age_s = 0.0
 
     _render_topbar(loaded_at, on_refresh_key="refresh_dash")
 
@@ -667,7 +733,7 @@ with tab_dash:
                 cols = st.columns(3, gap="small")
                 for col, row in zip(cols, attn[row_start:row_start + 3]):
                     with col:
-                        _render_card(row, out_dir, model, attention=True)
+                        _render_card(row, out_dir, model, attention=True, scope="attn")
 
         # Toolbar: filters live ABOVE the grid (not in sidebar)
         st.markdown(
