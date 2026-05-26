@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 
 import { api } from "../api";
+import { DigestBody } from "../components/DigestModal";
 import { StockCard } from "../components/StockCard";
 import { TickerCombo } from "../components/TickerCombo";
 import type { Lookup } from "../types";
@@ -91,9 +92,7 @@ export function LookupPage() {
           <StockCard row={result.row} />
           {result.markdown && (
             <div className="card p-6">
-              <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
-                {result.markdown}
-              </pre>
+              <DigestBody markdown={result.markdown} />
             </div>
           )}
         </div>
