@@ -3,6 +3,7 @@ import type {
   AlertEvent,
   AlertIn,
   Backtest,
+  BrokerStatus,
   CardRow,
   Dashboard,
   DigestPayload,
@@ -12,6 +13,8 @@ import type {
   Insights,
   Lookup,
   SearchOut,
+  SyncApplyResult,
+  SyncPreview,
   WatchlistItem,
   WatchlistItemIn,
 } from "./types";
@@ -155,6 +158,24 @@ export const api = {
     request<void>(`/alerts/events/${id}/ack`, { method: "POST" }),
   ackAllAlertEvents: () =>
     request<void>(`/alerts/events/ack_all`, { method: "POST" }),
+
+  iciciStatus: () => request<BrokerStatus>("/brokers/icici/status"),
+  iciciSetCredentials: (api_key: string, api_secret: string) =>
+    request<BrokerStatus>("/brokers/icici/credentials", {
+      method: "POST",
+      body: JSON.stringify({ api_key, api_secret }),
+    }),
+  iciciSetSession: (session_token: string) =>
+    request<BrokerStatus>("/brokers/icici/session", {
+      method: "POST",
+      body: JSON.stringify({ session_token }),
+    }),
+  iciciDisconnect: () =>
+    request<void>("/brokers/icici/disconnect", { method: "POST" }),
+  iciciSyncPreview: () =>
+    request<SyncPreview>("/brokers/icici/sync/preview", { method: "POST" }),
+  iciciSyncApply: () =>
+    request<SyncApplyResult>("/brokers/icici/sync/apply", { method: "POST" }),
 
   listWatchlist: () => request<WatchlistItem[]>("/watchlist"),
   addWatchlist: (item: WatchlistItemIn) =>

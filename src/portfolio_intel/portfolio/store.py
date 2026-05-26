@@ -72,6 +72,15 @@ CREATE TABLE IF NOT EXISTS alert_events (
     FOREIGN KEY(alert_id) REFERENCES alerts(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS alert_events_ack_ix ON alert_events(acknowledged, fired_at DESC);
+
+CREATE TABLE IF NOT EXISTS broker_config (
+    broker        TEXT PRIMARY KEY,   -- e.g. "icici_breeze"
+    api_key       TEXT,
+    api_secret    TEXT,                -- stored locally; never exposed via the API
+    session_token TEXT,
+    session_expires_at TEXT,
+    updated_at    TEXT NOT NULL
+);
 """
 
 
@@ -290,6 +299,53 @@ class PortfolioStore:
                 "UPDATE alert_events SET acknowledged = 1 WHERE acknowledged = 0"
             )
             return cur.rowcount
+
+    # --- Broker config ---
+
+    def broker_get(self, broker: str) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT broker, api_key, api_secret, session_token, "
+                "session_expires_at, updated_at FROM broker_config WHERE broker = ?",
+                (broker,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def broker_set_credentials(self, broker: str, api_key: str, api_secret: str) -> None:
+        from datetime import datetime as _dt
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO broker_config (broker, api_key, api_secret, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(broker) DO UPDATE SET
+                    api_key = excluded.api_key,
+                    api_secret = excluded.api_secret,
+                    updated_at = excluded.updated_at
+                """,
+                (broker, api_key, api_secret, _dt.utcnow().isoformat()),
+            )
+
+    def broker_set_session(self, broker: str, session_token: str,
+                           session_expires_at: str) -> None:
+        from datetime import datetime as _dt
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE broker_config
+                SET session_token = ?, session_expires_at = ?, updated_at = ?
+                WHERE broker = ?
+                """,
+                (session_token, session_expires_at, _dt.utcnow().isoformat(), broker),
+            )
+
+    def broker_clear(self, broker: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM broker_config WHERE broker = ?",
+                (broker,),
+            )
+            return cur.rowcount > 0
 
 
 def _row_to_holding(row: sqlite3.Row) -> Holding:

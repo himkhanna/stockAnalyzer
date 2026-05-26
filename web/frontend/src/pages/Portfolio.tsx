@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "../api";
+import { BrokerSection } from "../components/BrokerSection";
 import { EmptyState } from "../components/EmptyState";
 import { TickerCombo } from "../components/TickerCombo";
 import type { Holding, HoldingIn, ImportResult } from "../types";
@@ -19,6 +20,7 @@ export function PortfolioPage() {
 
   return (
     <div className="space-y-8 pb-12">
+      <BrokerSection onSynced={invalidateAll} />
       <ImportSection onDone={invalidateAll} />
       <HoldingsTable
         holdings={q.data ?? []}

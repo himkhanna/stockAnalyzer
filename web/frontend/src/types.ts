@@ -237,6 +237,44 @@ export interface AlertEvent {
   acknowledged: boolean;
 }
 
+export interface BrokerStatus {
+  broker: string;
+  has_credentials: boolean;
+  connected: boolean;
+  session_expires_at: string | null;
+  login_url: string | null;
+  note: string;
+}
+
+export interface BrokerHoldingPreview {
+  broker_stock_code: string;
+  isin: string;
+  company_name: string | null;
+  exchange_code: string;
+  quantity: number;
+  average_price: number;
+  current_price: number | null;
+  resolved_ticker: string | null;
+  resolved_market: string | null;
+  resolution_source: string | null;
+  action: "add" | "update" | "unchanged" | "unresolved";
+  existing_shares: number | null;
+  existing_cost_basis: number | null;
+}
+
+export interface SyncPreview {
+  rows: BrokerHoldingPreview[];
+  add_count: number;
+  update_count: number;
+  unchanged_count: number;
+  unresolved_count: number;
+}
+
+export interface SyncApplyResult {
+  upserted: number;
+  unresolved: number;
+}
+
 export interface Backtest {
   symbol: string;
   market: string;
