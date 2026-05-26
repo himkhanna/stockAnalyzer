@@ -135,18 +135,13 @@ def cmd_digest(args: argparse.Namespace) -> int:
     from ..news.router import fetch_news
     from ..news.sentiment import tally
 
+    from ..scoring import build_position_context, build_setup, compute_score, evaluate_rules
+
     symbol, market = _resolve_ticker(args.ticker, args.market)
     source = YFinanceSource()
 
     store = PortfolioStore(args.db)
     holding = store.get(symbol, market.code)
-    position_note: Optional[str] = None
-    if holding is not None:
-        position_note = (
-            f"holding {holding.shares:g} shares at cost basis "
-            f"{market.currency_symbol}{holding.cost_basis:,.2f} "
-            f"(added {holding.date_added.isoformat()})"
-        )
 
     # ---- Data + technicals ----
     try:
@@ -182,24 +177,60 @@ def cmd_digest(args: argparse.Namespace) -> int:
         for t in sentiment.sample_titles[:3]:
             print(f"              - {t}")
 
+    # ---- Score / rules / setup ----
+    score = compute_score(snap, sentiment)
+    rules = evaluate_rules(snap, sentiment)
+    setup = build_setup(snap, score)
+    position = None
+    if holding is not None:
+        current_price = quote.price if quote is not None else snap.close
+        position = build_position_context(holding, current_price=current_price)
+
+    sym = market.currency_symbol
+    print()
+    print(f"  Signal      {score.label}  (score {score.value:+.1f} / 10)")
+    if score.breakdown:
+        parts = [f"{k} {v:+.1f}" for k, v in score.breakdown.items()]
+        print(f"              breakdown: {', '.join(parts)}")
+    if rules:
+        for r in rules:
+            print(f"  Rule        [{r.direction}] {r.name} — {r.note}")
+    if setup is not None and setup.entry is not None and setup.target is not None:
+        tag = "valid" if setup.valid else "reference"
+        rr = f"  RR {setup.risk_reward:.1f}:1" if setup.risk_reward else ""
+        print(
+            f"  Setup       ({tag}) entry {sym}{setup.entry:,.2f} / "
+            f"stop {sym}{setup.stop:,.2f} / target {sym}{setup.target:,.2f}{rr}"
+        )
+        print(f"              {setup.note}")
+
     if holding is not None and quote is not None:
         cost_total = holding.cost_basis * holding.shares
         mv = quote.price * holding.shares
         pnl = mv - cost_total
         pct = (pnl / cost_total * 100.0) if cost_total else 0.0
-        sym = market.currency_symbol
         print()
         print(
             f"  Position    {holding.shares:g} sh @ {sym}{holding.cost_basis:,.2f}  "
             f"now {sym}{quote.price:,.2f}  "
             f"P&L {sym}{pnl:,.2f} ({pct:+.2f}%)"
         )
+        if position is not None:
+            print(f"              {position.suggestion}")
 
     # ---- Synthesis (streamed) ----
     print()
     if args.no_llm:
         print("(synthesis skipped: --no-llm)")
         return 0
+
+    position_note = None
+    if position is not None:
+        position_note = (
+            f"holding {position.shares:g} shares; "
+            f"market value {sym}{position.market_value:,.2f}; "
+            f"P&L {sym}{position.pnl:,.2f} ({position.pnl_pct:+.2f}%). {position.suggestion}"
+        )
 
     user_prompt = build_user_prompt(
         symbol=symbol,
@@ -208,6 +239,9 @@ def cmd_digest(args: argparse.Namespace) -> int:
         snap=snap,
         sentiment=sentiment,
         news=news,
+        score=score,
+        rules=rules,
+        setup=setup,
         position_note=position_note,
     )
     print(f"Synthesis ({args.model}):")

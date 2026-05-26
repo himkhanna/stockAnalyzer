@@ -10,6 +10,7 @@ from __future__ import annotations
 from portfolio_intel.data.models import NewsItem
 from portfolio_intel.llm.prompts import SYSTEM_PROMPT, build_user_prompt
 from portfolio_intel.news.sentiment import SentimentSummary
+from portfolio_intel.scoring import RuleHit, Score, TradeSetup
 from portfolio_intel.technical.levels import Levels
 from portfolio_intel.technical.signals import TechnicalSnapshot
 
@@ -44,11 +45,21 @@ def test_system_prompt_enforces_hard_constraints():
     assert "no confidence percentages" in sp
 
 
+def _score():
+    return Score(value=2.5, label="Buy", breakdown={"trend": 2.0, "macd": 1.0, "sentiment": -0.5})
+
+
+def _setup():
+    return TradeSetup(valid=True, entry=200.0, stop=195.0, target=215.0,
+                       risk_reward=3.0, note="entry at support, target at resistance.")
+
+
 def test_user_prompt_contains_every_indicator_value():
     snap = _snap()
     sentiment = SentimentSummary(total=5, positive=3, neutral=1, negative=1,
                                  themes=["earnings"], sample_titles=["Beat", "Upgrade"])
-    p = build_user_prompt("AAPL", "US", "$", snap, sentiment, news=[])
+    p = build_user_prompt("AAPL", "US", "$", snap, sentiment, news=[],
+                          score=_score(), rules=[], setup=_setup())
     assert "AAPL.US" in p
     assert "$211.40" in p
     assert "RSI(14): 68.00" in p
@@ -68,7 +79,8 @@ def test_user_prompt_renders_news_when_present():
     sentiment = SentimentSummary(total=3, positive=2, neutral=0, negative=1,
                                  themes=["earnings", "analyst"],
                                  sample_titles=["Beats EPS", "Analyst upgrade", "Probe"])
-    p = build_user_prompt("AAPL", "US", "$", snap, sentiment, news=[])
+    p = build_user_prompt("AAPL", "US", "$", snap, sentiment, news=[],
+                          score=_score(), rules=[], setup=_setup())
     assert "3 items" in p
     assert "2 pos / 0 neu / 1 neg" in p
     assert "earnings" in p
@@ -80,7 +92,8 @@ def test_user_prompt_says_no_news_when_empty():
     technicals alone and say so."""
     snap = _snap()
     empty = SentimentSummary(total=0, positive=0, neutral=0, negative=0)
-    p = build_user_prompt("RELIANCE", "NSE", "₹", snap, empty, news=[])
+    p = build_user_prompt("RELIANCE", "NSE", "₹", snap, empty, news=[],
+                          score=_score(), rules=[], setup=_setup())
     assert "no items found" in p
     assert "RELIANCE.NSE" in p
     assert "₹211.40" in p  # native currency, not $
@@ -91,7 +104,33 @@ def test_user_prompt_includes_position_when_given():
     empty = SentimentSummary(total=0, positive=0, neutral=0, negative=0)
     p = build_user_prompt(
         "AAPL", "US", "$", snap, empty, news=[],
+        score=_score(), rules=[], setup=_setup(),
         position_note="holding 50 shares at cost basis $182.00",
     )
     assert "Position context" in p
     assert "50 shares" in p
+
+
+def test_user_prompt_includes_score_and_rules_and_setup():
+    """Phase 4: composite score, rule hits, and trade setup are facts
+    handed to the model. The model must reason over them, not invent its
+    own."""
+    snap = _snap()
+    empty = SentimentSummary(total=0, positive=0, neutral=0, negative=0)
+    score = Score(value=4.0, label="Buy", breakdown={"trend": 2.0, "macd": 1.0, "sentiment": 1.0})
+    rules = [
+        RuleHit("oversold_at_support", "bullish", "RSI 25 oversold near support."),
+        RuleHit("golden_cross", "bullish", "SMA50 crossed above SMA200."),
+    ]
+    setup = TradeSetup(valid=True, entry=200.0, stop=196.0, target=215.0,
+                       risk_reward=3.75, note="entry on a dip to support.")
+    p = build_user_prompt("AAPL", "US", "$", snap, empty, news=[],
+                          score=score, rules=rules, setup=setup)
+    assert "Buy" in p and "+4.0" in p
+    assert "oversold_at_support" in p
+    assert "golden_cross" in p
+    assert "$200.00" in p  # entry
+    assert "$215.00" in p  # target
+    assert "RR 3.8:1" in p or "RR 3.7:1" in p  # tolerate rounding
+    # Disclaimer is still pinned.
+    assert "Not advice — your call." in p

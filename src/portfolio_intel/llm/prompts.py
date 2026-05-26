@@ -1,22 +1,26 @@
 """Synthesis prompt builder.
 
-This is the highest-leverage file in Phase 3. The system prompt enforces
+This is the highest-leverage file in Phase 3+. The system prompt enforces
 the honest tone CLAUDE.md demands. The user prompt is a structured fact
 sheet — every number the model is allowed to reason over.
 
 Hard constraints baked in:
-- The model must NOT invent numbers. Prices, RSI, levels are facts provided
-  in the prompt; the model only describes what they imply.
-- No price targets from the model. Levels are computed from real swing
-  highs/lows in the technical layer.
+- The model must NOT invent numbers. Prices, RSI, levels, the score, the
+  trade-setup levels are facts provided in the prompt; the model only
+  describes what they imply.
+- No price targets from the model — target levels come from real swing
+  highs/lows passed in below.
 - No confidence percentages (those come from backtests in Phase 5).
 - Output must end with the disclaimer.
-- Hedged forward-looking language ("would not be unusual"), no hype words.
+- Hedged forward-looking language, no hype words.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from ..data.models import NewsItem
 from ..news.sentiment import SentimentSummary
+from ..scoring import RuleHit, Score, TradeSetup
 from ..technical.signals import TechnicalSnapshot
 
 
@@ -24,15 +28,18 @@ SYSTEM_PROMPT = """You are a careful analyst writing a short synthesis for a per
 
 Hard rules:
 1. Use ONLY the numbers and facts in the user message. Do NOT invent prices,
-   indicator values, support/resistance levels, price targets, or percentages.
-   If something is missing, say so or omit it.
-2. Stay measured. Describe what the signals imply; do not promise direction.
+   indicator values, support/resistance levels, price targets, scores, or
+   percentages. If something is missing, say so or omit it.
+2. The composite score, triggered rules, and trade-setup levels are provided
+   as facts — explain what they imply, do not reinterpret or recompute them.
+3. Stay measured. Describe what the signals imply; do not promise direction.
    Use hedged forward-looking language: "a pullback would not be unusual",
-   "worth watching", "main risk is", "the picture is mixed".
-3. No hype words: "skyrocket", "moonshot", "guaranteed", "explode", etc.
-4. No confidence percentages. No predictions of specific future prices.
-5. Length: 4-7 sentences, one short paragraph. No headers, no bullet lists.
-6. End with exactly this line on its own: Not advice — your call.
+   "worth watching", "the main risk is", "the picture is mixed".
+4. No hype words: "skyrocket", "moonshot", "guaranteed", "explode", etc.
+5. No confidence percentages. No predictions of specific future prices
+   beyond the provided target level.
+6. Length: 4-7 sentences, one short paragraph. No headers, no bullet lists.
+7. End with exactly this line on its own: Not advice — your call.
 """
 
 
@@ -48,9 +55,11 @@ def build_user_prompt(
     sentiment: SentimentSummary,
     news: list[NewsItem],
     *,
-    position_note: str | None = None,
+    score: Optional[Score] = None,
+    rules: Optional[list[RuleHit]] = None,
+    setup: Optional[TradeSetup] = None,
+    position_note: Optional[str] = None,
 ) -> str:
-    """Render the structured fact sheet the model reasons over."""
     sym = currency_symbol
 
     lines: list[str] = [
@@ -90,6 +99,33 @@ def build_user_prompt(
         for t in sentiment.sample_titles[:5]:
             lines.append(f"  - {t}")
 
+    if score is not None:
+        lines.append("")
+        lines.append(
+            f"Composite score: {score.value:+.1f} / 10 -> {score.label} "
+            f"(direction: {score.direction})."
+        )
+        if score.breakdown:
+            parts = [f"{k} {v:+.1f}" for k, v in score.breakdown.items()]
+            lines.append(f"  Breakdown: {', '.join(parts)}")
+
+    if rules:
+        lines.append("")
+        lines.append("Rule triggers:")
+        for r in rules:
+            lines.append(f"  - [{r.direction}] {r.name}: {r.note}")
+
+    if setup is not None:
+        lines.append("")
+        if setup.entry is not None and setup.target is not None and setup.stop is not None:
+            verb = "Valid setup" if setup.valid else "Reference setup (not actionable as-is)"
+            lines.append(
+                f"{verb}: entry {sym}{setup.entry:,.2f} / "
+                f"stop {sym}{setup.stop:,.2f} / target {sym}{setup.target:,.2f}"
+                + (f" / RR {setup.risk_reward:.1f}:1" if setup.risk_reward else "")
+            )
+        lines.append(f"  Note: {setup.note}")
+
     if position_note:
         lines.append("")
         lines.append(f"Position context: {position_note}")
@@ -97,7 +133,7 @@ def build_user_prompt(
     lines.append("")
     lines.append(
         "Write a short synthesis paragraph (4-7 sentences) following all the rules "
-        "in the system message. Reason only over the facts above. End with: "
-        "Not advice — your call."
+        "in the system message. The composite score and any rule triggers are the "
+        "primary read — use them. End with: Not advice — your call."
     )
     return "\n".join(lines)

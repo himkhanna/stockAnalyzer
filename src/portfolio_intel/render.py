@@ -31,6 +31,14 @@ def render_digest_md(digest: Digest, *, holding: Holding | None = None, generate
     out.append(f"_Generated {now.isoformat(timespec='seconds')} · bars: {snap.bars_used}_")
     out.append("")
 
+    # Signal banner — the headline read.
+    out.append(f"## Signal: **{digest.score.label}**  ({digest.score.value:+.1f} / 10)")
+    out.append("")
+    if digest.score.breakdown:
+        parts = [f"{k} {v:+.1f}" for k, v in digest.score.breakdown.items()]
+        out.append(f"_Breakdown: {', '.join(parts)}_")
+        out.append("")
+
     # Price
     if q is not None:
         chg = q.change_pct
@@ -91,8 +99,33 @@ def render_digest_md(digest: Digest, *, holding: Holding | None = None, generate
             out.append(line)
     out.append("")
 
+    # Rules
+    if digest.rules:
+        out.append("## Rule triggers")
+        out.append("")
+        for r in digest.rules:
+            out.append(f"- **[{r.direction}]** _{r.name}_ — {r.note}")
+        out.append("")
+
+    # Trade setup
+    setup = digest.setup
+    if setup is not None:
+        out.append("## Trade setup")
+        out.append("")
+        if setup.entry is not None and setup.target is not None and setup.stop is not None:
+            verb = "✅ Valid" if setup.valid else "⚠ Reference only (not actionable as-is)"
+            rr = f" · **RR {setup.risk_reward:.1f}:1**" if setup.risk_reward else ""
+            out.append(
+                f"{verb} — entry **{sym}{setup.entry:,.2f}** / "
+                f"stop **{sym}{setup.stop:,.2f}** / target **{sym}{setup.target:,.2f}**{rr}"
+            )
+        out.append("")
+        out.append(setup.note)
+        out.append("")
+
     # Position
     if holding is not None and q is not None:
+        pos = digest.position
         cost_total = holding.cost_basis * holding.shares
         mv = q.price * holding.shares
         pnl = mv - cost_total
@@ -105,6 +138,10 @@ def render_digest_md(digest: Digest, *, holding: Holding | None = None, generate
         )
         out.append(f"- **Current value:** {sym}{mv:,.2f}")
         out.append(f"- **P&L:** {sym}{pnl:,.2f} ({pct:+.2f}%)")
+        if pos is not None and pos.weight_pct is not None:
+            tag = " — **overweight**" if pos.overweight else ""
+            out.append(f"- **Portfolio weight:** {pos.weight_pct:.1f}%{tag}")
+            out.append(f"- _{pos.suggestion}_")
         out.append("")
 
     # Synthesis

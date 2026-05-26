@@ -51,6 +51,9 @@ class BatchOutcome:
     rsi: Optional[float] = None
     sentiment_label: Optional[str] = None
     sentiment_total: int = 0
+    score_value: Optional[float] = None
+    score_label: Optional[str] = None
+    overweight: bool = False
     synthesis_first_line: Optional[str] = None
 
 
@@ -89,6 +92,11 @@ def run_batch(
     outcomes: list[BatchOutcome] = []
     finnhub = finnhub or FinnhubNewsSource()
 
+    # Precompute currency-bucket totals so each holding's portfolio weight
+    # uses its own currency (CLAUDE.md: no silent FX conversion). This means
+    # an initial cheap pass to grab quotes for each holding.
+    bucket_totals = _compute_currency_bucket_totals(items, data_source)
+
     for i, item in enumerate(items, start=1):
         file_path = day_dir / f"{item.symbol}.{item.market.code}.md"
         t0 = time.monotonic()
@@ -104,14 +112,9 @@ def run_batch(
             continue
 
         try:
-            position_note = None
-            if item.holding is not None:
-                h = item.holding
-                position_note = (
-                    f"holding {h.shares:g} shares at cost basis "
-                    f"{item.market.currency_symbol}{h.cost_basis:,.2f} "
-                    f"(added {h.date_added.isoformat()})"
-                )
+            bucket_total = (
+                bucket_totals.get(item.holding.currency) if item.holding else None
+            )
             digest = build_digest(
                 item.symbol,
                 item.market,
@@ -120,7 +123,8 @@ def run_batch(
                 period=period,
                 run_llm=run_llm,
                 model=model,
-                position_note=position_note,
+                holding=item.holding,
+                currency_bucket_total=bucket_total,
             )
             md = render_digest_md(digest, holding=item.holding)
             file_path.write_text(md, encoding="utf-8")
@@ -139,6 +143,9 @@ def run_batch(
                 rsi=digest.snapshot.rsi,
                 sentiment_label=digest.sentiment.label,
                 sentiment_total=digest.sentiment.total,
+                score_value=digest.score.value,
+                score_label=digest.score.label,
+                overweight=(digest.position.overweight if digest.position else False),
                 synthesis_first_line=first_line,
             )
         except Exception as e:
@@ -161,6 +168,23 @@ def run_batch(
     return outcomes
 
 
+def _compute_currency_bucket_totals(
+    items: list[BatchItem], data_source: DataSource
+) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    for it in items:
+        if it.holding is None:
+            continue
+        try:
+            q = data_source.get_quote(it.symbol, it.market)
+            price = q.price
+        except Exception:
+            # Fall back to cost basis so the bucket isn't entirely missing.
+            price = it.holding.cost_basis
+        totals[it.holding.currency] = totals.get(it.holding.currency, 0.0) + price * it.holding.shares
+    return totals
+
+
 def _write_index(day_dir: Path, outcomes: list[BatchOutcome]) -> None:
     today = day_dir.name
     lines: list[str] = []
@@ -171,20 +195,34 @@ def _write_index(day_dir: Path, outcomes: list[BatchOutcome]) -> None:
                  f"{sum(o.status == 'skipped' for o in outcomes)} skipped · "
                  f"{sum(o.status == 'failed' for o in outcomes)} failed_")
     lines.append("")
-    lines.append("| Ticker | Price | Trend | RSI | News | Note |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append("| Ticker | Signal | Price | Trend | RSI | News | Note |")
+    lines.append("|---|---|---|---|---|---|---|")
     for o in outcomes:
-        sym = f"[{o.item.symbol}.{o.item.market.code}]({o.path.name})" if o.path else f"{o.item.symbol}.{o.item.market.code}"
+        ticker_cell = (
+            f"[{o.item.symbol}.{o.item.market.code}]({o.path.name})"
+            if o.path else f"{o.item.symbol}.{o.item.market.code}"
+        )
         if o.status == "failed":
-            lines.append(f"| {o.item.symbol}.{o.item.market.code} | — | — | — | — | failed: {o.error} |")
+            lines.append(
+                f"| {o.item.symbol}.{o.item.market.code} | — | — | — | — | — | "
+                f"failed: {o.error} |"
+            )
             continue
+        signal = (
+            f"**{o.score_label}** ({o.score_value:+.1f})"
+            if o.score_label is not None and o.score_value is not None else "—"
+        )
+        if o.overweight:
+            signal += " · overweight"
         cur = f"{o.item.market.currency_symbol}{o.last_price:,.2f}" if o.last_price is not None else "—"
         rsi = f"{o.rsi:.0f}" if o.rsi is not None else "—"
         news = f"{o.sentiment_total} ({o.sentiment_label})" if o.sentiment_total else "none"
         note = o.synthesis_first_line or ("(no synthesis)" if o.status == "ok" else "(skipped)")
         if len(note) > 100:
             note = note[:97] + "..."
-        lines.append(f"| {sym} | {cur} | {o.trend_label or '—'} | {rsi} | {news} | {note} |")
+        lines.append(
+            f"| {ticker_cell} | {signal} | {cur} | {o.trend_label or '—'} | {rsi} | {news} | {note} |"
+        )
 
     lines.append("")
     (day_dir / "index.md").write_text("\n".join(lines), encoding="utf-8")
