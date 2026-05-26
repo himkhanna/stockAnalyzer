@@ -1,0 +1,72 @@
+"""FastAPI backend for the React frontend.
+
+Thin layer over the existing portfolio_intel modules — does no math itself.
+Endpoints map 1:1 to what the UI needs.
+
+Run (dev): uvicorn web.api.main:app --reload --port 8000
+"""
+from __future__ import annotations
+
+import asyncio
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from .routers import digest as digest_router
+from .routers import holdings as holdings_router
+from .routers import lookup as lookup_router
+from .routers import portfolio as portfolio_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+
+
+app = FastAPI(
+    title="Portfolio Intelligence API",
+    version="0.1.0",
+    description="Backend for the React UI. Personal use only.",
+    lifespan=lifespan,
+)
+
+# Permissive CORS for local dev — Vite runs on 5173, FastAPI on 8000.
+# Production serves the built frontend from this same process so CORS isn't needed.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(holdings_router.router, prefix="/api/holdings", tags=["holdings"])
+app.include_router(portfolio_router.router, prefix="/api/portfolio", tags=["portfolio"])
+app.include_router(lookup_router.router, prefix="/api/lookup", tags=["lookup"])
+app.include_router(digest_router.router, prefix="/api/digest", tags=["digest"])
+
+
+@app.get("/api/health")
+def health() -> dict:
+    return {"status": "ok"}
+
+
+# Serve the built React app if it exists. In dev, Vite handles this on :5173.
+_FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+if _FRONTEND_DIST.exists():
+    app.mount(
+        "/assets",
+        StaticFiles(directory=_FRONTEND_DIST / "assets"),
+        name="assets",
+    )
+
+    @app.get("/{full_path:path}")
+    def spa_fallback(full_path: str):
+        target = _FRONTEND_DIST / full_path
+        if target.is_file():
+            return FileResponse(target)
+        return FileResponse(_FRONTEND_DIST / "index.html")

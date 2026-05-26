@@ -15,3 +15,7 @@ venv/
 .upload.csv
 digests/
 .rows_cache.pkl
+.rows_cache_api.pkl
+web/frontend/node_modules/
+web/frontend/dist/
+web/frontend/.vite/

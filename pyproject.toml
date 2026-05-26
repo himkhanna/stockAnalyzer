@@ -20,6 +20,11 @@ dev = [
 ui = [
     "streamlit>=1.30",
 ]
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.6",
+]
 
 [project.scripts]
 pintel = "portfolio_intel.cli.main:main"
