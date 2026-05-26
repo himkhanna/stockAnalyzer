@@ -3,6 +3,7 @@
 Commands:
   pintel lookup  <ticker> [--market US|NSE|BSE]
   pintel analyze <ticker> [--market ...] [--period 1y] [--interval 1d]
+  pintel digest  <ticker> [--market ...] [--period 1y] [--no-llm] [--model NAME]
   pintel list
   pintel add     <ticker> --shares N --cost X [--market ...] [--date YYYY-MM-DD]
   pintel remove  <ticker> [--market ...]
@@ -19,6 +20,8 @@ from ..data.base import DataSource, DataSourceError
 from ..data.models import Quote
 from ..data.yfinance_source import YFinanceSource
 from ..markets import Market, parse_ticker
+from ..digest import build_digest
+from ..llm.ollama import DEFAULT_MODEL
 from ..portfolio.csv_import import import_csv_file
 from ..portfolio.models import Holding
 from ..portfolio.store import PortfolioStore
@@ -115,6 +118,76 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     except DataSourceError:
         pass  # quote is a nice-to-have here; history already loaded
     _print_snapshot(symbol, market, snap, q=q)
+    return 0
+
+
+def cmd_digest(args: argparse.Namespace) -> int:
+    symbol, market = _resolve_ticker(args.ticker, args.market)
+    source = YFinanceSource()
+
+    # Check for portfolio position so we can show position-aware context.
+    store = PortfolioStore(args.db)
+    holding = store.get(symbol, market.code)
+    position_note: Optional[str] = None
+    if holding is not None:
+        position_note = (
+            f"holding {holding.shares:g} shares at cost basis "
+            f"{market.currency_symbol}{holding.cost_basis:,.2f} "
+            f"(added {holding.date_added.isoformat()})"
+        )
+
+    try:
+        digest = build_digest(
+            symbol,
+            market,
+            data_source=source,
+            period=args.period,
+            run_llm=not args.no_llm,
+            model=args.model,
+            position_note=position_note,
+        )
+    except DataSourceError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    snap = digest.snapshot
+    print(f"\n=== {digest.symbol}.{market.code} digest ===")
+    _print_snapshot(digest.symbol, market, snap, q=digest.quote)
+
+    s = digest.sentiment
+    print()
+    if s.total == 0:
+        print(f"  News        no items found")
+    else:
+        themes = f"  themes: {', '.join(s.themes)}" if s.themes else ""
+        print(
+            f"  News (7d)   {s.total} items  "
+            f"{s.positive} pos / {s.neutral} neu / {s.negative} neg  ({s.label}){themes}"
+        )
+        for t in s.sample_titles[:3]:
+            print(f"              - {t}")
+
+    if holding is not None and digest.quote is not None:
+        cost_total = holding.cost_basis * holding.shares
+        mv = digest.quote.price * holding.shares
+        pnl = mv - cost_total
+        pct = (pnl / cost_total * 100.0) if cost_total else 0.0
+        sym = market.currency_symbol
+        print()
+        print(
+            f"  Position    {holding.shares:g} sh @ {sym}{holding.cost_basis:,.2f}  "
+            f"now {sym}{digest.quote.price:,.2f}  "
+            f"P&L {sym}{pnl:,.2f} ({pct:+.2f}%)"
+        )
+
+    print()
+    if digest.synthesis:
+        print(f"Synthesis ({digest.model_used}):")
+        print(digest.synthesis)
+    elif digest.synthesis_error:
+        print(f"(synthesis skipped: {digest.synthesis_error})")
+    else:
+        print("(synthesis skipped: --no-llm)")
     return 0
 
 
@@ -252,6 +325,25 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--period", default="1y", help="yfinance period (e.g. 6mo, 1y, 2y).")
     sp.add_argument("--interval", default="1d", help="Bar interval (e.g. 1d, 1wk).")
     sp.set_defaults(func=cmd_analyze)
+
+    sp = sub.add_parser(
+        "digest",
+        help="Full digest: technicals + news + LLM synthesis (needs Ollama).",
+    )
+    sp.add_argument("ticker")
+    sp.add_argument("--market", choices=[m.code for m in Market])
+    sp.add_argument("--period", default="1y")
+    sp.add_argument(
+        "--no-llm",
+        action="store_true",
+        help="Skip the Ollama synthesis (useful when Ollama isn't running).",
+    )
+    sp.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=f"Ollama model name (default: {DEFAULT_MODEL} or $OLLAMA_MODEL).",
+    )
+    sp.set_defaults(func=cmd_digest)
 
     sp = sub.add_parser("list", help="List portfolio holdings with current prices and P&L.")
     sp.set_defaults(func=cmd_list)
