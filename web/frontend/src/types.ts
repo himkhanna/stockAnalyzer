@@ -119,3 +119,86 @@ export interface SearchOut {
   query: string;
   hits: SearchHit[];
 }
+
+export interface WatchlistItem {
+  ticker: string;
+  market: string;
+  note: string;
+  date_added: string;
+}
+
+export interface WatchlistItemIn {
+  ticker: string;
+  market: string;
+  note?: string;
+}
+
+export interface IndexSnapshot {
+  symbol: string;
+  name: string;
+  market: string;
+  price: number | null;
+  change_pct: number | null;
+  rsi: number | null;
+  trend: string | null;
+  score_label: SignalLabel | null;
+  error: string | null;
+}
+
+export interface ConvictionRow {
+  row: CardRow;
+  direction: "bullish" | "bearish";
+  rule_count: number;
+  rule_notes: string[];
+}
+
+export interface SignalChange {
+  symbol: string;
+  market: string;
+  previous_label: string;
+  current_label: string;
+  previous_value: number;
+  current_value: number;
+  captured_previous_at: string;
+}
+
+export interface EarningsItem {
+  symbol: string;
+  market: string;
+  company: string | null;
+  earnings_date: string;
+  days_until: number;
+}
+
+export interface RiskTopWeight {
+  symbol: string;
+  market: string;
+  weight_pct: number;
+  market_value: number;
+  currency_symbol: string;
+}
+
+export interface CurrencyExposure {
+  currency: string;
+  currency_symbol: string;
+  market_value: number;
+  pct_of_total_inr: number;
+}
+
+export interface RiskPanel {
+  top_weights: RiskTopWeight[];
+  currency_exposure: CurrencyExposure[];
+  biggest_winners: CardRow[];
+  biggest_losers: CardRow[];
+}
+
+export interface Insights {
+  conviction: ConvictionRow[];
+  watchlist: CardRow[];
+  indices: IndexSnapshot[];
+  risk: RiskPanel;
+  signal_changes: SignalChange[];
+  upcoming_earnings: EarningsItem[];
+  generated_at: string;
+  note: string;
+}

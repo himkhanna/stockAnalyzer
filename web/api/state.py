@@ -87,6 +87,7 @@ def _card_from_digest(symbol: str, market: Market, period: str) -> dict:
     except (DataSourceError, ValueError) as e:
         return {"error": str(e), "symbol": symbol, "market_code": market.code}
 
+    rule_hits = list(getattr(digest, "rules", []) or [])
     return {
         "symbol": symbol,
         "market_code": market.code,
@@ -107,6 +108,9 @@ def _card_from_digest(symbol: str, market: Market, period: str) -> dict:
         "setup_target": digest.setup.target if digest.setup else None,
         "setup_rr": digest.setup.risk_reward if digest.setup else None,
         "recent_closes": digest.recent_closes,
+        "rule_count": len(rule_hits),
+        "rule_names": [h.name for h in rule_hits],
+        "rule_notes": [h.note for h in rule_hits],
     }
 
 
@@ -183,10 +187,12 @@ def get_dashboard(*, db_path: str = DB_PATH, period: str = DEFAULT_PERIOD,
                 }
 
         rows = _build_rows(items, period)
+        loaded_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+        _persist_signals(store, rows, captured_at=loaded_at)
         payload = {
             "fp": fp,
             "rows": rows,
-            "loaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "loaded_at": loaded_at,
             "saved_ts": time.time(),
         }
         _save_disk(payload)
@@ -195,6 +201,29 @@ def get_dashboard(*, db_path: str = DB_PATH, period: str = DEFAULT_PERIOD,
             "loaded_at": payload["loaded_at"],
             "stale": False,
         }
+
+
+def _persist_signals(store: PortfolioStore, rows: list[CardRow], *, captured_at: str) -> None:
+    for r in rows:
+        c = r.card
+        if c.get("error"):
+            continue
+        val = c.get("score_value")
+        lbl = c.get("score_label")
+        sym = c.get("symbol")
+        mkt = c.get("market_code")
+        if val is None or not lbl or not sym or not mkt:
+            continue
+        try:
+            store.signal_record(sym, mkt, float(val), lbl, captured_at)
+        except Exception:
+            continue  # signal history is best-effort; never break the dashboard
+
+
+def build_card_for(symbol: str, market: Market, period: str = DEFAULT_PERIOD) -> CardRow:
+    """Build a single CardRow for any (symbol, market) — used by lookup & insights."""
+    c = _card_from_digest(symbol, market, period)
+    return CardRow(card=c, holding=None)
 
 
 def invalidate_dashboard() -> None:

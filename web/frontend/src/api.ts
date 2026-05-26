@@ -5,8 +5,11 @@ import type {
   Holding,
   HoldingIn,
   ImportResult,
+  Insights,
   Lookup,
   SearchOut,
+  WatchlistItem,
+  WatchlistItemIn,
 } from "./types";
 
 const BASE = "/api";
@@ -121,6 +124,20 @@ export const api = {
       `/lookup/${encodeURIComponent(ticker)}${qs ? `?${qs}` : ""}`,
     );
   },
+
+  getInsights: () => request<Insights>("/insights"),
+
+  listWatchlist: () => request<WatchlistItem[]>("/watchlist"),
+  addWatchlist: (item: WatchlistItemIn) =>
+    request<WatchlistItem>("/watchlist", {
+      method: "POST",
+      body: JSON.stringify(item),
+    }),
+  removeWatchlist: (symbol: string, market: string) =>
+    request<void>(
+      `/watchlist/${encodeURIComponent(symbol)}/${encodeURIComponent(market)}`,
+      { method: "DELETE" },
+    ),
 
   search: (q: string, limit = 10, signal?: AbortSignal) =>
     request<SearchOut>(

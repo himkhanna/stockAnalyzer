@@ -1,8 +1,8 @@
 import clsx from "clsx";
-import { BarChart3, Briefcase, Moon, RefreshCw, Search, Sun } from "lucide-react";
+import { BarChart3, Briefcase, Lightbulb, Moon, RefreshCw, Search, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
 
-export type TabKey = "dashboard" | "lookup" | "portfolio";
+export type TabKey = "dashboard" | "insights" | "lookup" | "portfolio";
 
 interface Props {
   tab: TabKey;
@@ -14,6 +14,7 @@ interface Props {
 
 const TABS: { key: TabKey; label: string; icon: typeof BarChart3 }[] = [
   { key: "dashboard", label: "Dashboard", icon: BarChart3 },
+  { key: "insights", label: "Insights", icon: Lightbulb },
   { key: "lookup", label: "Lookup", icon: Search },
   { key: "portfolio", label: "Portfolio", icon: Briefcase },
 ];

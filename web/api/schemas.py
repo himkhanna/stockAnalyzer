@@ -114,3 +114,91 @@ class DigestOut(BaseModel):
 class LookupOut(BaseModel):
     row: CardRowOut
     markdown: Optional[str] = None  # populated when run_llm=true
+
+
+# --- Insights page ---
+
+class WatchlistItemIn(BaseModel):
+    ticker: str
+    market: str  # "US" | "NSE" | "BSE"
+    note: Optional[str] = ""
+
+
+class WatchlistItemOut(BaseModel):
+    ticker: str
+    market: str
+    note: str
+    date_added: str
+
+
+class IndexSnapshot(BaseModel):
+    symbol: str
+    name: str
+    market: str
+    price: Optional[float] = None
+    change_pct: Optional[float] = None
+    rsi: Optional[float] = None
+    trend: Optional[str] = None
+    score_label: Optional[str] = None
+    error: Optional[str] = None
+
+
+class ConvictionRow(BaseModel):
+    row: CardRowOut
+    direction: str  # "bullish" | "bearish"
+    rule_count: int
+    rule_notes: list[str] = []
+
+
+class SignalChange(BaseModel):
+    symbol: str
+    market: str
+    previous_label: str
+    current_label: str
+    previous_value: float
+    current_value: float
+    captured_previous_at: str
+
+
+class EarningsItem(BaseModel):
+    symbol: str
+    market: str
+    company: Optional[str] = None
+    earnings_date: str
+    days_until: int
+
+
+class RiskTopWeight(BaseModel):
+    symbol: str
+    market: str
+    weight_pct: float
+    market_value: float
+    currency_symbol: str
+
+
+class CurrencyExposure(BaseModel):
+    currency: str
+    currency_symbol: str
+    market_value: float
+    pct_of_total_inr: float  # in INR-equivalent units; see note in code
+
+
+class RiskPanel(BaseModel):
+    top_weights: list[RiskTopWeight]
+    currency_exposure: list[CurrencyExposure]
+    biggest_winners: list[CardRowOut]
+    biggest_losers: list[CardRowOut]
+
+
+class InsightsOut(BaseModel):
+    conviction: list[ConvictionRow]
+    watchlist: list[CardRowOut]
+    indices: list[IndexSnapshot]
+    risk: RiskPanel
+    signal_changes: list[SignalChange]
+    upcoming_earnings: list[EarningsItem]
+    generated_at: str
+    note: str = (
+        "Signals are deterministic from the scoring engine + rules. "
+        "They are decision support, not advice."
+    )

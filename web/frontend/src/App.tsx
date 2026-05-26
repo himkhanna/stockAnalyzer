@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { Dashboard } from "./pages/Dashboard";
+import { InsightsPage } from "./pages/Insights";
 import { LookupPage } from "./pages/Lookup";
 import { PortfolioPage } from "./pages/Portfolio";
 import { TopBar, type TabKey } from "./components/TopBar";
@@ -38,6 +39,7 @@ export default function App() {
       />
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {tab === "dashboard" && <Dashboard onLoadedAt={setLoadedAt} />}
+        {tab === "insights" && <InsightsPage />}
         {tab === "lookup" && <LookupPage />}
         {tab === "portfolio" && <PortfolioPage />}
       </main>

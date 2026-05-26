@@ -51,6 +51,9 @@ class Market(Enum):
         symbol = symbol.strip().upper()
         if not symbol:
             raise ValueError("symbol is empty")
+        # Yahoo indices use a ^ prefix and are global (no exchange suffix).
+        if symbol.startswith("^"):
+            return symbol
         if self.yfinance_suffix and symbol.endswith(self.yfinance_suffix):
             return symbol
         return f"{symbol}{self.yfinance_suffix}"
@@ -91,3 +94,16 @@ def parse_ticker(raw: str, default_market: Optional[Market] = None) -> tuple[str
     if default_market is not None:
         return s, default_market
     return s, Market.US
+
+
+# Yahoo-formatted index symbols for the market-pulse panel. Kept here so adding
+# a new market means adding its bellwether index alongside the Market enum.
+INDICES: list[tuple[str, str, str]] = [
+    # (yahoo_symbol, display_name, market_code)
+    ("^GSPC",   "S&P 500",        "US"),
+    ("^IXIC",   "NASDAQ",         "US"),
+    ("^DJI",    "Dow Jones",      "US"),
+    ("^NSEI",   "NIFTY 50",       "NSE"),
+    ("^NSEBANK","NIFTY BANK",     "NSE"),
+    ("^BSESN",  "SENSEX",         "BSE"),
+]

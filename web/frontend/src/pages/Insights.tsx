@@ -1,0 +1,534 @@
+import { AlertTriangle, CalendarClock, Loader2, Trash2, TrendingDown, TrendingUp } from "lucide-react";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+
+import { api } from "../api";
+import { EmptyState } from "../components/EmptyState";
+import { StockCard } from "../components/StockCard";
+import { TickerCombo } from "../components/TickerCombo";
+import { fmtCurrency, fmtPct, SIGNAL_STYLES } from "../lib/format";
+import type {
+  ConvictionRow,
+  EarningsItem,
+  IndexSnapshot,
+  RiskPanel,
+  SignalChange,
+  SignalLabel,
+  WatchlistItem,
+} from "../types";
+
+export function InsightsPage() {
+  const q = useQuery({ queryKey: ["insights"], queryFn: api.getInsights });
+
+  if (q.isLoading) {
+    return (
+      <div className="flex items-center gap-2 text-zinc-500 py-12 justify-center">
+        <Loader2 className="animate-spin" size={16} /> Building insights…
+      </div>
+    );
+  }
+  if (q.error || !q.data) {
+    const msg = (q.error as Error)?.message ?? "no data";
+    const [head, ...rest] = msg.split("\n");
+    return (
+      <EmptyState title="Could not build insights">
+        <div>{head}</div>
+        {rest.length > 0 && (
+          <pre className="mt-2 text-xs bg-zinc-100 dark:bg-zinc-800 rounded px-3 py-2 inline-block text-left whitespace-pre-wrap">
+            {rest.join("\n")}
+          </pre>
+        )}
+      </EmptyState>
+    );
+  }
+
+  const d = q.data;
+
+  return (
+    <div className="space-y-8 pb-12">
+      <header className="space-y-1">
+        <h1 className="text-xl font-bold">Insights</h1>
+        <p className="text-xs text-zinc-500">
+          Generated {d.generated_at} · {d.note}
+        </p>
+      </header>
+
+      <MarketPulse indices={d.indices} />
+      <ConvictionBoard rows={d.conviction} />
+      <WatchlistSection scanned={d.watchlist} />
+      <SignalChangesPanel changes={d.signal_changes} />
+      <EarningsPanel items={d.upcoming_earnings} />
+      <RiskView risk={d.risk} />
+    </div>
+  );
+}
+
+// --- Market pulse ---
+
+function MarketPulse({ indices }: { indices: IndexSnapshot[] }) {
+  return (
+    <section className="space-y-3">
+      <h2 className="text-base font-bold">Market pulse</h2>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {indices.map((ix) => (
+          <div key={ix.symbol} className="card p-4">
+            <div className="flex items-baseline justify-between">
+              <div>
+                <div className="font-semibold">{ix.name}</div>
+                <div className="text-xs text-zinc-500">
+                  {ix.symbol} · {ix.market}
+                </div>
+              </div>
+              {ix.score_label && (
+                <span
+                  className={`text-[11px] font-semibold px-2 py-0.5 rounded ${
+                    SIGNAL_STYLES[ix.score_label as SignalLabel]?.bg ?? "bg-zinc-500"
+                  } text-white`}
+                >
+                  {ix.score_label}
+                </span>
+              )}
+            </div>
+            {ix.error ? (
+              <div className="text-xs text-bear-500 mt-2">{ix.error}</div>
+            ) : (
+              <div className="mt-3 flex items-baseline gap-3">
+                <div className="text-xl font-mono">
+                  {ix.price != null ? ix.price.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—"}
+                </div>
+                <div
+                  className={`text-sm ${
+                    (ix.change_pct ?? 0) > 0
+                      ? "text-bull-500"
+                      : (ix.change_pct ?? 0) < 0
+                      ? "text-bear-500"
+                      : "text-zinc-500"
+                  }`}
+                >
+                  {fmtPct(ix.change_pct)}
+                </div>
+                <div className="text-xs text-zinc-500 ml-auto">
+                  RSI {ix.rsi != null ? ix.rsi.toFixed(0) : "—"} · {ix.trend ?? "—"}
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// --- Conviction board ---
+
+function ConvictionBoard({ rows }: { rows: ConvictionRow[] }) {
+  return (
+    <section className="space-y-3">
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-base font-bold">High-conviction holdings</h2>
+        <span className="text-xs text-zinc-500">
+          Score ≥ 6 with a confirming rule · {rows.length}
+        </span>
+      </div>
+      {rows.length === 0 ? (
+        <EmptyState title="No high-conviction signals right now">
+          Nothing in the portfolio is currently both strongly scored
+          <em> and </em> confirmed by a rule trigger. That's a useful answer too —
+          most days the right move is no move.
+        </EmptyState>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+          {rows.map((c) => (
+            <div key={`${c.row.symbol}.${c.row.market}`} className="space-y-2">
+              <StockCard row={c.row} attention />
+              {c.rule_notes.length > 0 && (
+                <ul className="text-xs text-zinc-500 list-disc pl-5">
+                  {c.rule_notes.slice(0, 3).map((n, i) => (
+                    <li key={i}>{n}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// --- Watchlist scan ---
+
+function WatchlistSection({ scanned }: { scanned: any[] }) {
+  const qc = useQueryClient();
+  const list = useQuery({ queryKey: ["watchlist"], queryFn: api.listWatchlist });
+
+  const [ticker, setTicker] = useState("");
+  const [market, setMarket] = useState("US");
+  const [note, setNote] = useState("");
+
+  const add = useMutation({
+    mutationFn: () => api.addWatchlist({ ticker, market, note }),
+    onSuccess: () => {
+      setTicker("");
+      setNote("");
+      qc.invalidateQueries({ queryKey: ["watchlist"] });
+      qc.invalidateQueries({ queryKey: ["insights"] });
+    },
+  });
+  const remove = useMutation({
+    mutationFn: (it: WatchlistItem) => api.removeWatchlist(it.ticker, it.market),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["watchlist"] });
+      qc.invalidateQueries({ queryKey: ["insights"] });
+    },
+  });
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-base font-bold">Watchlist</h2>
+        <span className="text-xs text-zinc-500">
+          Tickers you don't own, scanned with the same pipeline · {scanned.length}
+        </span>
+      </div>
+
+      <form
+        className="card p-4 flex flex-wrap items-end gap-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (ticker.trim()) add.mutate();
+        }}
+      >
+        <div className="flex-1 min-w-[200px]">
+          <label className="text-xs text-zinc-500 mb-1 block">
+            Ticker or company
+          </label>
+          <TickerCombo
+            value={ticker}
+            onChange={setTicker}
+            onPick={(hit) => {
+              setTicker(hit.symbol);
+              setMarket(hit.market);
+            }}
+            placeholder="AAPL or Reliance Industries"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-zinc-500 mb-1 block">Market</label>
+          <select
+            className="input w-32"
+            value={market}
+            onChange={(e) => setMarket(e.target.value)}
+          >
+            <option value="US">US</option>
+            <option value="NSE">NSE</option>
+            <option value="BSE">BSE</option>
+          </select>
+        </div>
+        <div className="flex-1 min-w-[160px]">
+          <label className="text-xs text-zinc-500 mb-1 block">Note (optional)</label>
+          <input
+            className="input"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="why you're watching"
+          />
+        </div>
+        <button
+          type="submit"
+          className="btn-primary"
+          disabled={!ticker.trim() || add.isPending}
+        >
+          {add.isPending ? "Adding…" : "Add to watchlist"}
+        </button>
+        {add.error && (
+          <div className="basis-full text-sm text-bear-500">
+            {(add.error as Error).message}
+          </div>
+        )}
+      </form>
+
+      {list.data && list.data.length > 0 && (
+        <div className="card overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-zinc-50 dark:bg-zinc-900/50 text-zinc-500 text-xs uppercase tracking-wider">
+              <tr>
+                <th className="text-left px-4 py-2.5 font-semibold">Ticker</th>
+                <th className="text-left px-4 py-2.5 font-semibold">Market</th>
+                <th className="text-left px-4 py-2.5 font-semibold">Note</th>
+                <th className="text-left px-4 py-2.5 font-semibold">Added</th>
+                <th className="px-4 py-2.5"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.data.map((w) => (
+                <tr
+                  key={`${w.ticker}.${w.market}`}
+                  className="border-t border-zinc-200 dark:border-zinc-800"
+                >
+                  <td className="px-4 py-2.5 font-semibold">{w.ticker}</td>
+                  <td className="px-4 py-2.5 text-zinc-500 text-xs uppercase">{w.market}</td>
+                  <td className="px-4 py-2.5 text-zinc-500">{w.note || "—"}</td>
+                  <td className="px-4 py-2.5 text-zinc-500 text-xs">{w.date_added}</td>
+                  <td className="px-4 py-2.5 text-right">
+                    <button
+                      className="text-zinc-400 hover:text-bear-500 p-1"
+                      onClick={() => remove.mutate(w)}
+                      aria-label={`Remove ${w.ticker}`}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {scanned.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+          {scanned.map((r) => (
+            <StockCard key={`wl-${r.symbol}.${r.market}`} row={r} />
+          ))}
+        </div>
+      )}
+
+      {list.data && list.data.length === 0 && (
+        <EmptyState title="Watchlist is empty">
+          Add a ticker above to scan it with the same scoring engine the
+          dashboard uses.
+        </EmptyState>
+      )}
+    </section>
+  );
+}
+
+// --- Signal changes ---
+
+function SignalChangesPanel({ changes }: { changes: SignalChange[] }) {
+  if (changes.length === 0) {
+    return (
+      <section className="space-y-3">
+        <h2 className="text-base font-bold">Recent signal changes</h2>
+        <EmptyState title="No flips since last refresh">
+          The conviction score on each holding is the same as the last build.
+          Try refreshing tomorrow.
+        </EmptyState>
+      </section>
+    );
+  }
+  return (
+    <section className="space-y-3">
+      <h2 className="text-base font-bold">Recent signal changes</h2>
+      <div className="card overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-zinc-50 dark:bg-zinc-900/50 text-zinc-500 text-xs uppercase tracking-wider">
+            <tr>
+              <th className="text-left px-4 py-2.5">Ticker</th>
+              <th className="text-left px-4 py-2.5">Was</th>
+              <th className="text-left px-4 py-2.5">Now</th>
+              <th className="text-right px-4 py-2.5">Δ score</th>
+              <th className="text-left px-4 py-2.5">Last seen</th>
+            </tr>
+          </thead>
+          <tbody>
+            {changes.map((c) => {
+              const delta = c.current_value - c.previous_value;
+              const positive = delta > 0;
+              const Icon = positive ? TrendingUp : TrendingDown;
+              return (
+                <tr
+                  key={`${c.symbol}.${c.market}`}
+                  className="border-t border-zinc-200 dark:border-zinc-800"
+                >
+                  <td className="px-4 py-2.5 font-semibold">
+                    {c.symbol}
+                    <span className="text-xs text-zinc-500 ml-2">{c.market}</span>
+                  </td>
+                  <td className="px-4 py-2.5 text-zinc-500">{c.previous_label}</td>
+                  <td className="px-4 py-2.5 font-semibold">{c.current_label}</td>
+                  <td
+                    className={`px-4 py-2.5 text-right font-mono ${
+                      positive ? "text-bull-500" : "text-bear-500"
+                    }`}
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      <Icon size={12} />
+                      {(positive ? "+" : "") + delta.toFixed(1)}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5 text-xs text-zinc-500">
+                    {c.captured_previous_at}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+// --- Earnings ---
+
+function EarningsPanel({ items }: { items: EarningsItem[] }) {
+  return (
+    <section className="space-y-3">
+      <div className="flex items-baseline gap-2">
+        <CalendarClock size={16} className="text-zinc-500" />
+        <h2 className="text-base font-bold">Upcoming earnings (30 days)</h2>
+      </div>
+      {items.length === 0 ? (
+        <EmptyState title="No earnings reports in the next 30 days">
+          Nothing in your portfolio has a confirmed earnings date soon.
+        </EmptyState>
+      ) : (
+        <div className="card overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-zinc-50 dark:bg-zinc-900/50 text-zinc-500 text-xs uppercase tracking-wider">
+              <tr>
+                <th className="text-left px-4 py-2.5">Ticker</th>
+                <th className="text-left px-4 py-2.5">Market</th>
+                <th className="text-left px-4 py-2.5">Date</th>
+                <th className="text-right px-4 py-2.5">In</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((e) => (
+                <tr
+                  key={`${e.symbol}.${e.market}-${e.earnings_date}`}
+                  className="border-t border-zinc-200 dark:border-zinc-800"
+                >
+                  <td className="px-4 py-2.5 font-semibold">{e.symbol}</td>
+                  <td className="px-4 py-2.5 text-zinc-500 text-xs uppercase">{e.market}</td>
+                  <td className="px-4 py-2.5">{e.earnings_date}</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-zinc-600 dark:text-zinc-300">
+                    {e.days_until === 0 ? "today" : `${e.days_until}d`}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// --- Risk view ---
+
+function RiskView({ risk }: { risk: RiskPanel }) {
+  return (
+    <section className="space-y-3">
+      <div className="flex items-baseline gap-2">
+        <AlertTriangle size={16} className="text-zinc-500" />
+        <h2 className="text-base font-bold">Portfolio risk</h2>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <div className="card p-4">
+          <div className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
+            Top 5 weights
+          </div>
+          {risk.top_weights.length === 0 ? (
+            <div className="text-sm text-zinc-500">—</div>
+          ) : (
+            <ul className="space-y-1.5">
+              {risk.top_weights.map((w) => (
+                <li
+                  key={`${w.symbol}.${w.market}`}
+                  className="flex items-baseline justify-between text-sm"
+                >
+                  <span className="font-semibold">{w.symbol}</span>
+                  <span className="text-xs text-zinc-500 mx-2">{w.market}</span>
+                  <span className="ml-auto font-mono">{w.weight_pct.toFixed(1)}%</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="card p-4">
+          <div className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
+            Currency exposure
+          </div>
+          {risk.currency_exposure.length === 0 ? (
+            <div className="text-sm text-zinc-500">—</div>
+          ) : (
+            <ul className="space-y-1.5">
+              {risk.currency_exposure.map((c) => (
+                <li
+                  key={c.currency}
+                  className="flex items-baseline justify-between text-sm"
+                >
+                  <span className="font-semibold">
+                    {c.currency_symbol} {c.currency}
+                  </span>
+                  <span className="ml-auto font-mono">
+                    {c.pct_of_total_inr.toFixed(1)}%
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="text-[11px] text-zinc-400 mt-3">
+            Approximate split using a fixed USD↔INR rate. For position-sizing,
+            not for P&L.
+          </div>
+        </div>
+
+        <div className="card p-4 space-y-3">
+          <div>
+            <div className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
+              Biggest winners
+            </div>
+            {risk.biggest_winners.length === 0 ? (
+              <div className="text-sm text-zinc-500">—</div>
+            ) : (
+              <ul className="space-y-1">
+                {risk.biggest_winners.map((r) => (
+                  <li
+                    key={`win-${r.symbol}.${r.market}`}
+                    className="flex items-baseline justify-between text-sm"
+                  >
+                    <span className="font-semibold">{r.symbol}</span>
+                    <span className="ml-auto font-mono text-bull-500">
+                      {fmtPct(r.pnl_pct)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="border-t border-zinc-200 dark:border-zinc-800 pt-3">
+            <div className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
+              Biggest losers
+            </div>
+            {risk.biggest_losers.length === 0 ? (
+              <div className="text-sm text-zinc-500">—</div>
+            ) : (
+              <ul className="space-y-1">
+                {risk.biggest_losers.map((r) => (
+                  <li
+                    key={`lose-${r.symbol}.${r.market}`}
+                    className="flex items-baseline justify-between text-sm"
+                  >
+                    <span className="font-semibold">{r.symbol}</span>
+                    <span className="ml-auto font-mono text-bear-500">
+                      {fmtPct(r.pnl_pct)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// Silence unused-import warning for fmtCurrency when grid is empty.
+void fmtCurrency;

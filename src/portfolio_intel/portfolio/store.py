@@ -23,6 +23,23 @@ CREATE TABLE IF NOT EXISTS holdings (
     date_added  TEXT NOT NULL,
     PRIMARY KEY (ticker, market)
 );
+
+CREATE TABLE IF NOT EXISTS watchlist (
+    ticker      TEXT NOT NULL,
+    market      TEXT NOT NULL,
+    note        TEXT,
+    date_added  TEXT NOT NULL,
+    PRIMARY KEY (ticker, market)
+);
+
+CREATE TABLE IF NOT EXISTS signal_history (
+    ticker       TEXT NOT NULL,
+    market       TEXT NOT NULL,
+    captured_at  TEXT NOT NULL,
+    score_value  REAL NOT NULL,
+    score_label  TEXT NOT NULL,
+    PRIMARY KEY (ticker, market, captured_at)
+);
 """
 
 
@@ -87,6 +104,68 @@ class PortfolioStore:
 
     def __iter__(self) -> Iterable[Holding]:
         return iter(self.all())
+
+    # --- Watchlist ---
+
+    def watchlist_add(self, ticker: str, market_code: str, note: str = "") -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO watchlist (ticker, market, note, date_added)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(ticker, market) DO UPDATE SET note = excluded.note
+                """,
+                (ticker.upper(), market_code.upper(), note, date.today().isoformat()),
+            )
+
+    def watchlist_remove(self, ticker: str, market_code: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM watchlist WHERE ticker = ? AND market = ?",
+                (ticker.upper(), market_code.upper()),
+            )
+            return cur.rowcount > 0
+
+    def watchlist_all(self) -> list[tuple[str, str, str, str]]:
+        """Return [(ticker, market, note, date_added), ...]."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT ticker, market, note, date_added FROM watchlist ORDER BY market, ticker"
+            ).fetchall()
+            return [(r["ticker"], r["market"], r["note"] or "", r["date_added"]) for r in rows]
+
+    # --- Signal history ---
+
+    def signal_record(self, ticker: str, market_code: str, value: float, label: str,
+                      captured_at: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO signal_history
+                    (ticker, market, captured_at, score_value, score_label)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (ticker.upper(), market_code.upper(), captured_at, float(value), label),
+            )
+
+    def signal_previous(self, ticker: str, market_code: str,
+                        before: str) -> Optional[tuple[float, str, str]]:
+        """Return (score_value, score_label, captured_at) for the most recent
+        capture strictly before `before`. None if no prior record."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT score_value, score_label, captured_at
+                FROM signal_history
+                WHERE ticker = ? AND market = ? AND captured_at < ?
+                ORDER BY captured_at DESC
+                LIMIT 1
+                """,
+                (ticker.upper(), market_code.upper(), before),
+            ).fetchone()
+            if row is None:
+                return None
+            return (float(row["score_value"]), row["score_label"], row["captured_at"])
 
 
 def _row_to_holding(row: sqlite3.Row) -> Holding:

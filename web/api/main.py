@@ -18,9 +18,11 @@ from fastapi.staticfiles import StaticFiles
 
 from .routers import digest as digest_router
 from .routers import holdings as holdings_router
+from .routers import insights as insights_router
 from .routers import lookup as lookup_router
 from .routers import portfolio as portfolio_router
 from .routers import search as search_router
+from .routers import watchlist as watchlist_router
 
 
 @asynccontextmanager
@@ -50,6 +52,8 @@ app.include_router(portfolio_router.router, prefix="/api/portfolio", tags=["port
 app.include_router(lookup_router.router, prefix="/api/lookup", tags=["lookup"])
 app.include_router(digest_router.router, prefix="/api/digest", tags=["digest"])
 app.include_router(search_router.router, prefix="/api/search", tags=["search"])
+app.include_router(insights_router.router, prefix="/api/insights", tags=["insights"])
+app.include_router(watchlist_router.router, prefix="/api/watchlist", tags=["watchlist"])
 
 
 @app.get("/api/health")
