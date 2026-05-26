@@ -1,6 +1,7 @@
 """CLI.
 
 Commands:
+  pintel ui                    # launch the Streamlit dashboard
   pintel lookup   <ticker> [--market US|NSE|BSE]
   pintel analyze  <ticker> [--market ...] [--period 1y] [--interval 1d]
   pintel digest   <ticker> [--market ...] [--period 1y] [--no-llm] [--model NAME] [--backtest]
@@ -297,6 +298,33 @@ def cmd_digest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ui(args: argparse.Namespace) -> int:
+    """Launch the Streamlit dashboard."""
+    import os
+    from pathlib import Path
+    try:
+        import streamlit  # noqa: F401
+    except ImportError:
+        print(
+            "Streamlit isn't installed. Install the UI extra:\n"
+            "  pip install -e \".[ui]\"",
+            file=sys.stderr,
+        )
+        return 2
+    app_path = Path(__file__).resolve().parent.parent / "ui" / "app.py"
+    cmd = [
+        sys.executable, "-m", "streamlit", "run", str(app_path),
+        "--browser.gatherUsageStats", "false",
+    ]
+    if args.port:
+        cmd += ["--server.port", str(args.port)]
+    # streamlit.web.bootstrap.run is the in-process equivalent, but going
+    # via subprocess is the path Streamlit's docs recommend for packaged
+    # entry points — it owns its own signal handling.
+    import subprocess
+    return subprocess.call(cmd)
+
+
 def cmd_backtest(args: argparse.Namespace) -> int:
     from ..backtest import run_backtest as run_bt
 
@@ -528,6 +556,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pintel", description="Personal portfolio intelligence.")
     p.add_argument("--db", default=DEFAULT_DB, help="SQLite database path")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    sp = sub.add_parser("ui", help="Launch the Streamlit dashboard.")
+    sp.add_argument("--port", type=int, default=None, help="Port for the local server.")
+    sp.set_defaults(func=cmd_ui)
 
     sp = sub.add_parser("lookup", help="Look up a quote for any ticker (no portfolio needed).")
     sp.add_argument("ticker")
