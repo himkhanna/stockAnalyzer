@@ -43,14 +43,15 @@ class BreezeSessionExpired(BreezeError):
 @dataclass(frozen=True)
 class BrokerHolding:
     """A holding as the broker reports it, before we translate into our canonical schema."""
-    stock_code: str          # broker-internal code (often the NSE ticker but not always)
+    stock_code: str          # broker-internal code (e.g. EXIIND)
     exchange_code: str       # "NSE" or "BSE"
     quantity: float
     average_price: float
     current_price: Optional[float]
     isin: str
     company_name: Optional[str] = None
-    raw: dict | None = None  # original record for debugging
+    exchange_stock_code: Optional[str] = None  # the real NSE/BSE ticker (e.g. EXIDEIND), from get_names()
+    raw: dict | None = None
 
 
 # IST = UTC+05:30
@@ -172,11 +173,11 @@ class BreezeClient:
     def _enrich_with_names(self, holdings: list[BrokerHolding]) -> list[BrokerHolding]:
         enriched: list[BrokerHolding] = []
         for h in holdings:
-            if h.isin and h.company_name:
+            if h.exchange_stock_code and h.company_name:
                 enriched.append(h)
                 continue
-            isin, name = self._lookup_name(h.exchange_code, h.stock_code)
-            if not isin and not name:
+            ex_ticker, name = self._lookup_name(h.exchange_code, h.stock_code)
+            if not ex_ticker and not name:
                 enriched.append(h)
                 continue
             enriched.append(BrokerHolding(
@@ -185,25 +186,19 @@ class BreezeClient:
                 quantity=h.quantity,
                 average_price=h.average_price,
                 current_price=h.current_price,
-                isin=isin or h.isin,
+                isin=h.isin,
                 company_name=name or h.company_name,
+                exchange_stock_code=ex_ticker or h.exchange_stock_code,
                 raw=h.raw,
             ))
         return enriched
 
     def _lookup_name(self, exchange_code: str, stock_code: str) -> tuple[str, str]:
-        """Resolve a Breeze stock_code → (isin, company_name) via get_names().
-        Returns ('', '') if the SDK call fails or the response doesn't
-        contain usable fields. Never raises."""
+        """Resolve a Breeze stock_code → (exchange_stock_code, company_name)
+        via get_names(). Returns ('', '') if the SDK call fails. Never raises."""
         if not stock_code:
             return "", ""
-        # Breeze uses NSEEQ / BSEEQ for the security-info endpoint, distinct
-        # from the NSE / BSE codes used by holdings.
         broker_exchange = (exchange_code or "NSE").upper()
-        if broker_exchange == "NSE":
-            broker_exchange = "NSEEQ"
-        elif broker_exchange == "BSE":
-            broker_exchange = "BSEEQ"
         try:
             resp = self._sdk.get_names(exchange_code=broker_exchange, stock_code=stock_code)
         except Exception:
@@ -211,20 +206,21 @@ class BreezeClient:
         if not isinstance(resp, dict):
             return "", ""
 
-        # Field names from Breeze's get_names vary; check several variants.
-        isin = ""
-        name = ""
-        for k in ("isin", "ISIN", "isin_code", "stock_ISIN"):
+        ex_ticker = ""
+        for k in ("exchange_stock_code", "exchangeStockCode", "exchange_symbol"):
             v = resp.get(k)
             if v:
-                isin = str(v).strip()
+                ex_ticker = str(v).strip().upper()
                 break
+
+        name = ""
+        # Yes — the key has a space. Real Breeze response: "company name".
         for k in ("company name", "company_name", "Company Name", "stock_name", "name"):
             v = resp.get(k)
             if v:
                 name = str(v).strip()
                 break
-        return isin, name
+        return ex_ticker, name
 
 
 _ISIN_KEYS = ("isin", "ISIN", "isin_code", "stock_ISIN", "stock_isin", "isin_no")

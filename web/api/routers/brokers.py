@@ -216,8 +216,9 @@ def icici_debug_holdings() -> dict:
         {
             "stock_code": h.stock_code,
             "exchange_code": h.exchange_code,
-            "isin": h.isin,
+            "exchange_stock_code": h.exchange_stock_code,
             "company_name": h.company_name,
+            "isin": h.isin,
         }
         for h in holdings[:5]
     ]
@@ -315,25 +316,32 @@ def _diff_against_store(holdings: list[BrokerHolding]) -> SyncPreview:
 
         resolved_ticker: Optional[str] = None
         source: Optional[str] = None
-        # Prefer ISIN → NSE bare ticker via the existing resolver (handles overrides + Yahoo search).
-        try:
-            res = resolver.resolve(isin=h.isin, name=h.company_name or "", fallback=h.stock_code)
-            if res is not None:
-                resolved_ticker = res.bare_symbol
-                source = res.source
-        except Exception:
-            resolved_ticker = None
-        # If ISIN+name didn't resolve, try Yahoo-searching the broker's stock_code
-        # directly. ICICI uses short codes like EXIIND / GABIND that Yahoo's
-        # fuzzy search often maps to the real NSE listing (EXIDEIND, GABRIEL).
-        if resolved_ticker is None and h.stock_code:
+        # Fast path: Breeze's get_names() already gave us the real NSE/BSE
+        # ticker — use it directly, no Yahoo search needed.
+        if h.exchange_stock_code:
+            resolved_ticker = h.exchange_stock_code.upper()
+            source = "breeze_get_names"
+        else:
+            # Fall back to ISIN/name resolution via Yahoo.
             try:
-                res = resolver.resolve(name=h.stock_code)
+                res = resolver.resolve(
+                    isin=h.isin,
+                    name=h.company_name or "",
+                    fallback=h.stock_code,
+                )
                 if res is not None:
                     resolved_ticker = res.bare_symbol
-                    source = (res.source or "") + "_via_code"
+                    source = res.source
             except Exception:
-                pass
+                resolved_ticker = None
+            if resolved_ticker is None and h.stock_code:
+                try:
+                    res = resolver.resolve(name=h.stock_code)
+                    if res is not None:
+                        resolved_ticker = res.bare_symbol
+                        source = (res.source or "") + "_via_code"
+                except Exception:
+                    pass
 
         action = "unresolved"
         existing_shares: Optional[float] = None
