@@ -1,0 +1,543 @@
+import { Calculator, ChevronRight, Loader2, Plus, Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+
+import { api } from "../api";
+import { EmptyState } from "../components/EmptyState";
+import { TickerCombo } from "../components/TickerCombo";
+import type { OptionRow, PayoffLeg } from "../types";
+
+export function OptionsPage() {
+  return (
+    <div className="space-y-10 pb-12">
+      <header className="space-y-1">
+        <h1 className="text-xl font-bold">Options (NSE F&amp;O)</h1>
+        <p className="text-xs text-zinc-500">
+          Read-only chain data + payoff math. Greeks via Black-Scholes (r =
+          7%). No directional recommendations are made for options.
+        </p>
+      </header>
+
+      <ChainSection />
+      <PayoffSection />
+    </div>
+  );
+}
+
+// ---- Chain ----
+
+function ChainSection() {
+  const [symbol, setSymbol] = useState("RELIANCE");
+  const [brokerCode, setBrokerCode] = useState("");
+  const [expiry, setExpiry] = useState<string>("");
+
+  const expiries = useQuery({
+    queryKey: ["option-expiries"],
+    queryFn: api.optionExpiries,
+  });
+
+  const chain = useMutation({
+    mutationFn: () => api.optionChain(symbol, expiry, brokerCode || undefined),
+  });
+
+  const grouped = useMemo(() => groupByStrike(chain.data?.rows ?? []), [chain.data]);
+
+  // Pick the strike closest to spot.
+  const atmStrike = useMemo(() => {
+    if (!chain.data?.spot || grouped.length === 0) return null;
+    const spot = chain.data.spot;
+    return grouped.reduce((best, g) =>
+      Math.abs(g.strike - spot) < Math.abs(best.strike - spot) ? g : best,
+    ).strike;
+  }, [chain.data, grouped]);
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-base font-bold">Option chain</h2>
+        {chain.data?.spot && (
+          <span className="text-xs text-zinc-500">
+            spot ₹{chain.data.spot.toFixed(2)} · {chain.data.days_to_expiry}d to expiry · r {(chain.data.risk_free_rate * 100).toFixed(1)}%
+          </span>
+        )}
+      </div>
+
+      <form
+        className="card p-4 grid grid-cols-1 md:grid-cols-12 gap-3 items-end"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (symbol && expiry) chain.mutate();
+        }}
+      >
+        <div className="md:col-span-4">
+          <label className="text-xs text-zinc-500 mb-1 block">Underlying</label>
+          <TickerCombo
+            value={symbol}
+            onChange={setSymbol}
+            placeholder="RELIANCE / NIFTY / INFY"
+          />
+        </div>
+        <div className="md:col-span-3">
+          <label className="text-xs text-zinc-500 mb-1 block">
+            Broker code <span className="text-zinc-400">(if different)</span>
+          </label>
+          <input
+            className="input"
+            value={brokerCode}
+            onChange={(e) => setBrokerCode(e.target.value.toUpperCase())}
+            placeholder="e.g. RELIND, EXIIND"
+          />
+        </div>
+        <div className="md:col-span-3">
+          <label className="text-xs text-zinc-500 mb-1 block">Expiry</label>
+          <select
+            className="input"
+            value={expiry}
+            onChange={(e) => setExpiry(e.target.value)}
+          >
+            <option value="">— pick one —</option>
+            {expiries.data?.weekly && (
+              <optgroup label="Weekly (NIFTY/BANKNIFTY only)">
+                {expiries.data.weekly.map((d) => (
+                  <option key={`w-${d}`} value={d}>{d}</option>
+                ))}
+              </optgroup>
+            )}
+            {expiries.data?.monthly && (
+              <optgroup label="Monthly">
+                {expiries.data.monthly.map((d) => (
+                  <option key={`m-${d}`} value={d}>{d}</option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        </div>
+        <div className="md:col-span-2">
+          <button
+            type="submit"
+            className="btn-primary w-full"
+            disabled={!symbol || !expiry || chain.isPending}
+          >
+            {chain.isPending ? (
+              <><Loader2 size={14} className="animate-spin" /> Loading…</>
+            ) : (
+              <><ChevronRight size={14} /> Load chain</>
+            )}
+          </button>
+        </div>
+        {chain.error && (
+          <div className="md:col-span-12 text-sm text-bear-500">
+            {(chain.error as Error).message}
+          </div>
+        )}
+      </form>
+
+      {chain.data && grouped.length === 0 && (
+        <EmptyState title="No chain rows">
+          Breeze returned no contracts for this combination. Try a different
+          underlying, expiry, or specify the ICICI broker code (e.g. RELIND
+          for Reliance).
+        </EmptyState>
+      )}
+
+      {grouped.length > 0 && (
+        <div className="card overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="bg-zinc-50 dark:bg-zinc-900/50 text-zinc-500 uppercase tracking-wider">
+              <tr>
+                <th colSpan={5} className="text-center py-2 border-r border-zinc-200 dark:border-zinc-800 text-bull-600 font-bold">CALLS</th>
+                <th className="px-2 py-2 text-center bg-zinc-100 dark:bg-zinc-800">STRIKE</th>
+                <th colSpan={5} className="text-center py-2 border-l border-zinc-200 dark:border-zinc-800 text-bear-600 font-bold">PUTS</th>
+              </tr>
+              <tr>
+                <th className="px-2 py-1 text-right">OI</th>
+                <th className="px-2 py-1 text-right">IV</th>
+                <th className="px-2 py-1 text-right">Δ</th>
+                <th className="px-2 py-1 text-right">LTP</th>
+                <th className="px-2 py-1 text-right border-r border-zinc-200 dark:border-zinc-800">Bid/Ask</th>
+                <th className="px-2 py-1 text-center bg-zinc-100 dark:bg-zinc-800">K</th>
+                <th className="px-2 py-1 text-left border-l border-zinc-200 dark:border-zinc-800">Bid/Ask</th>
+                <th className="px-2 py-1 text-left">LTP</th>
+                <th className="px-2 py-1 text-left">Δ</th>
+                <th className="px-2 py-1 text-left">IV</th>
+                <th className="px-2 py-1 text-left">OI</th>
+              </tr>
+            </thead>
+            <tbody>
+              {grouped.map((g) => {
+                const isAtm = atmStrike != null && g.strike === atmStrike;
+                return (
+                  <tr
+                    key={g.strike}
+                    className={`border-t border-zinc-200 dark:border-zinc-800 ${
+                      isAtm ? "bg-amber-50 dark:bg-amber-900/10" : ""
+                    }`}
+                  >
+                    <CallCell row={g.call} field="open_interest" align="right" />
+                    <CallCell row={g.call} field="iv" align="right" pct />
+                    <CallCell row={g.call} field="delta" align="right" />
+                    <CallCell row={g.call} field="ltp" align="right" />
+                    <td className="px-2 py-1 text-right text-zinc-500 border-r border-zinc-200 dark:border-zinc-800">
+                      <BidAsk row={g.call} />
+                    </td>
+                    <td className="px-2 py-1 text-center font-mono font-bold bg-zinc-50 dark:bg-zinc-900/50">
+                      {g.strike}
+                    </td>
+                    <td className="px-2 py-1 text-left text-zinc-500 border-l border-zinc-200 dark:border-zinc-800">
+                      <BidAsk row={g.put} />
+                    </td>
+                    <PutCell row={g.put} field="ltp" />
+                    <PutCell row={g.put} field="delta" />
+                    <PutCell row={g.put} field="iv" pct />
+                    <PutCell row={g.put} field="open_interest" />
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function groupByStrike(rows: OptionRow[]) {
+  const map = new Map<number, { strike: number; call?: OptionRow; put?: OptionRow }>();
+  for (const r of rows) {
+    const g = map.get(r.strike) ?? { strike: r.strike };
+    if (r.right === "call") g.call = r;
+    else g.put = r;
+    map.set(r.strike, g);
+  }
+  return Array.from(map.values()).sort((a, b) => a.strike - b.strike);
+}
+
+function CallCell({
+  row,
+  field,
+  align,
+  pct,
+}: {
+  row: OptionRow | undefined;
+  field: keyof OptionRow;
+  align: "left" | "right";
+  pct?: boolean;
+}) {
+  return (
+    <td className={`px-2 py-1 font-mono text-${align}`}>
+      {formatCell(row, field, pct)}
+    </td>
+  );
+}
+function PutCell({
+  row,
+  field,
+  pct,
+}: {
+  row: OptionRow | undefined;
+  field: keyof OptionRow;
+  pct?: boolean;
+}) {
+  return <td className="px-2 py-1 font-mono text-left">{formatCell(row, field, pct)}</td>;
+}
+
+function formatCell(row: OptionRow | undefined, field: keyof OptionRow, pct?: boolean): string {
+  if (!row) return "—";
+  const v = row[field] as number | null;
+  if (v == null) return "—";
+  if (pct) return `${(v * 100).toFixed(1)}%`;
+  if (field === "delta" || field === "gamma" || field === "theta" || field === "vega") {
+    return v.toFixed(3);
+  }
+  if (field === "open_interest" || field === "volume") {
+    return Math.round(v).toLocaleString();
+  }
+  return v.toFixed(2);
+}
+
+function BidAsk({ row }: { row: OptionRow | undefined }) {
+  if (!row) return <>—</>;
+  const b = row.bid != null ? row.bid.toFixed(2) : "—";
+  const a = row.ask != null ? row.ask.toFixed(2) : "—";
+  return <span className="font-mono text-[11px]">{b} / {a}</span>;
+}
+
+// ---- Payoff calculator ----
+
+interface LegInput {
+  id: number;
+  qty: string;
+  right: "call" | "put";
+  strike: string;
+  premium: string;
+}
+
+let _nextId = 1;
+
+function PayoffSection() {
+  const [spot, setSpot] = useState("100");
+  const [lotSize, setLotSize] = useState("1");
+  const [legs, setLegs] = useState<LegInput[]>([
+    { id: _nextId++, qty: "1", right: "call", strike: "100", premium: "2.5" },
+  ]);
+
+  const compute = useMutation({
+    mutationFn: () => {
+      const body = {
+        spot: parseFloat(spot) || 0,
+        lot_size: parseInt(lotSize) || 1,
+        legs: legs.map<PayoffLeg>((l) => ({
+          qty: parseInt(l.qty) || 0,
+          right: l.right,
+          strike: parseFloat(l.strike) || 0,
+          premium: parseFloat(l.premium) || 0,
+        })),
+      };
+      return api.optionPayoff(body);
+    },
+  });
+
+  const addLeg = () =>
+    setLegs((ls) => [
+      ...ls,
+      { id: _nextId++, qty: "1", right: "call", strike: spot, premium: "0" },
+    ]);
+  const removeLeg = (id: number) => setLegs((ls) => ls.filter((l) => l.id !== id));
+  const updateLeg = (id: number, patch: Partial<LegInput>) =>
+    setLegs((ls) => ls.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-baseline gap-2">
+        <Calculator size={16} className="text-zinc-500" />
+        <h2 className="text-base font-bold">Payoff calculator</h2>
+        <span className="text-xs text-zinc-500 ml-auto">
+          Piecewise payoff at expiry · no Black-Scholes extrapolation
+        </span>
+      </div>
+
+      <div className="card p-4 space-y-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div>
+            <label className="text-xs text-zinc-500 mb-1 block">Spot</label>
+            <input
+              className="input"
+              type="number"
+              step="any"
+              value={spot}
+              onChange={(e) => setSpot(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="text-xs text-zinc-500 mb-1 block">Lot size</label>
+            <input
+              className="input"
+              type="number"
+              value={lotSize}
+              onChange={(e) => setLotSize(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          {legs.map((l) => (
+            <div key={l.id} className="grid grid-cols-12 gap-2 items-end">
+              <div className="col-span-2">
+                <label className="text-[11px] text-zinc-500 mb-1 block">Qty (- = short)</label>
+                <input
+                  className="input"
+                  type="number"
+                  value={l.qty}
+                  onChange={(e) => updateLeg(l.id, { qty: e.target.value })}
+                />
+              </div>
+              <div className="col-span-2">
+                <label className="text-[11px] text-zinc-500 mb-1 block">Side</label>
+                <select
+                  className="input"
+                  value={l.right}
+                  onChange={(e) => updateLeg(l.id, { right: e.target.value as "call" | "put" })}
+                >
+                  <option value="call">Call</option>
+                  <option value="put">Put</option>
+                </select>
+              </div>
+              <div className="col-span-3">
+                <label className="text-[11px] text-zinc-500 mb-1 block">Strike</label>
+                <input
+                  className="input"
+                  type="number"
+                  step="any"
+                  value={l.strike}
+                  onChange={(e) => updateLeg(l.id, { strike: e.target.value })}
+                />
+              </div>
+              <div className="col-span-3">
+                <label className="text-[11px] text-zinc-500 mb-1 block">Premium / share</label>
+                <input
+                  className="input"
+                  type="number"
+                  step="any"
+                  value={l.premium}
+                  onChange={(e) => updateLeg(l.id, { premium: e.target.value })}
+                />
+              </div>
+              <div className="col-span-2">
+                <button
+                  type="button"
+                  className="btn-ghost text-bear-500"
+                  onClick={() => removeLeg(l.id)}
+                  disabled={legs.length === 1}
+                  aria-label="Remove leg"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button type="button" className="btn-ghost text-xs" onClick={addLeg}>
+            <Plus size={14} /> Add leg
+          </button>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={() => compute.mutate()}
+            disabled={compute.isPending}
+          >
+            {compute.isPending ? "Computing…" : "Compute payoff"}
+          </button>
+        </div>
+
+        {compute.error && (
+          <div className="text-sm text-bear-500">{(compute.error as Error).message}</div>
+        )}
+
+        {compute.data && <PayoffResult data={compute.data} spot={parseFloat(spot) || 0} />}
+      </div>
+    </section>
+  );
+}
+
+function PayoffResult({
+  data,
+  spot,
+}: {
+  data: import("../types").PayoffOut;
+  spot: number;
+}) {
+  return (
+    <div className="space-y-3 pt-3 border-t border-zinc-200 dark:border-zinc-800">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <Stat
+          label="Max gain"
+          v={data.max_gain}
+          tone={data.max_gain > 0 ? "bull" : "neutral"}
+        />
+        <Stat
+          label="Max loss"
+          v={data.max_loss}
+          tone={data.max_loss < 0 ? "bear" : "neutral"}
+        />
+        <Stat
+          label="Cost basis"
+          v={data.cost_basis}
+          subtitle={data.cost_basis > 0 ? "debit" : data.cost_basis < 0 ? "credit" : ""}
+          tone="neutral"
+        />
+        <Stat
+          label="Break-even(s)"
+          v={null}
+          subtitle={data.break_evens.length ? data.break_evens.map((b) => b.toFixed(2)).join(", ") : "—"}
+          tone="neutral"
+        />
+      </div>
+
+      <div className="h-72 w-full">
+        <ResponsiveContainer>
+          <LineChart data={data.curve} margin={{ left: 10, right: 10, top: 10, bottom: 10 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(120,120,120,0.2)" />
+            <XAxis
+              dataKey="s"
+              tick={{ fontSize: 11 }}
+              tickFormatter={(v) => v.toFixed(0)}
+              label={{ value: "Underlying at expiry", position: "insideBottom", offset: -5, fontSize: 11 }}
+            />
+            <YAxis tick={{ fontSize: 11 }} />
+            <Tooltip
+              contentStyle={{ fontSize: 12 }}
+              formatter={(v: number) => v.toFixed(2)}
+              labelFormatter={(s: number) => `S = ${s.toFixed(2)}`}
+            />
+            <ReferenceLine y={0} stroke="rgba(120,120,120,0.6)" />
+            {spot > 0 && (
+              <ReferenceLine
+                x={spot}
+                stroke="rgba(245,158,11,0.6)"
+                strokeDasharray="3 3"
+                label={{ value: "spot", fontSize: 10, fill: "rgb(245,158,11)" }}
+              />
+            )}
+            {data.break_evens.map((b, i) => (
+              <ReferenceLine
+                key={`be-${i}`}
+                x={b}
+                stroke="rgba(120,120,120,0.4)"
+                strokeDasharray="2 2"
+              />
+            ))}
+            <Line
+              type="monotone"
+              dataKey="pnl"
+              stroke="#3b82f6"
+              strokeWidth={2}
+              dot={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  v,
+  subtitle,
+  tone,
+}: {
+  label: string;
+  v: number | null;
+  subtitle?: string;
+  tone: "bull" | "bear" | "neutral";
+}) {
+  const cls =
+    tone === "bull"
+      ? "text-bull-500"
+      : tone === "bear"
+      ? "text-bear-500"
+      : "text-zinc-700 dark:text-zinc-300";
+  return (
+    <div className="rounded-md border border-zinc-200 dark:border-zinc-800 p-3">
+      <div className="text-[11px] text-zinc-500 uppercase tracking-wider">{label}</div>
+      {v != null && (
+        <div className={`text-lg font-mono font-semibold ${cls}`}>
+          {v.toFixed(2)}
+        </div>
+      )}
+      {subtitle && <div className="text-xs text-zinc-500 mt-0.5">{subtitle}</div>}
+    </div>
+  );
+}

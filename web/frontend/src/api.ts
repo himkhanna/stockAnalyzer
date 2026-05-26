@@ -12,6 +12,10 @@ import type {
   ImportResult,
   Insights,
   Lookup,
+  OptionChain,
+  OptionExpiries,
+  PayoffIn,
+  PayoffOut,
   SearchOut,
   SyncApplyResult,
   SyncPreview,
@@ -174,6 +178,18 @@ export const api = {
     request<void>("/brokers/icici/disconnect", { method: "POST" }),
   iciciSyncPreview: () =>
     request<SyncPreview>("/brokers/icici/sync/preview", { method: "POST" }),
+  optionExpiries: () => request<OptionExpiries>("/options/expiries"),
+  optionChain: (symbol: string, expiry: string, brokerCode?: string) => {
+    const params = new URLSearchParams({ symbol, expiry });
+    if (brokerCode) params.set("broker_code", brokerCode);
+    return request<OptionChain>(`/options/chain?${params.toString()}`);
+  },
+  optionPayoff: (body: PayoffIn) =>
+    request<PayoffOut>("/options/payoff", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   iciciSyncApply: (replaceIndia = false) =>
     request<SyncApplyResult>(
       `/brokers/icici/sync/apply?replace_india=${replaceIndia ? "true" : "false"}`,

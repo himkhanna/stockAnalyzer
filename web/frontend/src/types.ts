@@ -237,6 +237,67 @@ export interface AlertEvent {
   acknowledged: boolean;
 }
 
+export interface OptionRow {
+  strike: number;
+  right: "call" | "put";
+  bid: number | null;
+  ask: number | null;
+  ltp: number | null;
+  open_interest: number | null;
+  volume: number | null;
+  iv: number | null;
+  theo_price: number | null;
+  delta: number | null;
+  gamma: number | null;
+  theta: number | null;
+  vega: number | null;
+}
+
+export interface OptionChain {
+  underlying_symbol: string;
+  underlying_broker_code: string;
+  spot: number | null;
+  expiry: string;
+  days_to_expiry: number;
+  risk_free_rate: number;
+  rows: OptionRow[];
+  note: string;
+}
+
+export interface OptionExpiries {
+  monthly: string[];
+  weekly: string[];
+}
+
+export interface PayoffLeg {
+  qty: number;
+  right: "call" | "put";
+  strike: number;
+  premium: number;
+}
+
+export interface PayoffIn {
+  spot: number;
+  legs: PayoffLeg[];
+  lot_size: number;
+  s_min?: number;
+  s_max?: number;
+  steps?: number;
+}
+
+export interface PayoffPoint {
+  s: number;
+  pnl: number;
+}
+
+export interface PayoffOut {
+  curve: PayoffPoint[];
+  max_loss: number;
+  max_gain: number;
+  break_evens: number[];
+  cost_basis: number;
+}
+
 export interface BrokerStatus {
   broker: string;
   has_credentials: boolean;

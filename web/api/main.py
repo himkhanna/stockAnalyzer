@@ -20,6 +20,7 @@ from .routers import alerts as alerts_router
 from .routers import backtest as backtest_router
 from .routers import brokers as brokers_router
 from .routers import digest as digest_router
+from .routers import options as options_router
 from .routers import holdings as holdings_router
 from .routers import insights as insights_router
 from .routers import lookup as lookup_router
@@ -60,6 +61,7 @@ app.include_router(watchlist_router.router, prefix="/api/watchlist", tags=["watc
 app.include_router(backtest_router.router, prefix="/api/backtest", tags=["backtest"])
 app.include_router(alerts_router.router, prefix="/api/alerts", tags=["alerts"])
 app.include_router(brokers_router.router, prefix="/api/brokers", tags=["brokers"])
+app.include_router(options_router.router, prefix="/api/options", tags=["options"])
 
 
 @app.get("/api/health")

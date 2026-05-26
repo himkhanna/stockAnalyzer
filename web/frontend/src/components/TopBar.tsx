@@ -1,11 +1,11 @@
 import clsx from "clsx";
-import { BarChart3, Briefcase, Lightbulb, Moon, RefreshCw, Search, Sun } from "lucide-react";
+import { BarChart3, Briefcase, Lightbulb, Moon, RefreshCw, Search, SlidersHorizontal, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { api } from "../api";
 
-export type TabKey = "dashboard" | "insights" | "lookup" | "portfolio";
+export type TabKey = "dashboard" | "insights" | "lookup" | "options" | "portfolio";
 
 interface Props {
   tab: TabKey;
@@ -19,6 +19,7 @@ const TABS: { key: TabKey; label: string; icon: typeof BarChart3 }[] = [
   { key: "dashboard", label: "Dashboard", icon: BarChart3 },
   { key: "insights", label: "Insights", icon: Lightbulb },
   { key: "lookup", label: "Lookup", icon: Search },
+  { key: "options", label: "Options", icon: SlidersHorizontal },
   { key: "portfolio", label: "Portfolio", icon: Briefcase },
 ];
 

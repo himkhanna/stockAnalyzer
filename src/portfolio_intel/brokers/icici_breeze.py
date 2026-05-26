@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import urllib.parse
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
 
@@ -51,6 +51,21 @@ class BrokerHolding:
     isin: str
     company_name: Optional[str] = None
     exchange_stock_code: Optional[str] = None  # the real NSE/BSE ticker (e.g. EXIDEIND), from get_names()
+    raw: dict | None = None
+
+
+@dataclass(frozen=True)
+class OptionContract:
+    """A single option row from the NSE chain."""
+    stock_code: str           # ICICI's underlying code
+    expiry_date: str          # ISO date "YYYY-MM-DD"
+    strike_price: float
+    right: str                # "call" or "put"
+    bid: Optional[float]
+    ask: Optional[float]
+    ltp: Optional[float]      # last traded price
+    open_interest: Optional[float]
+    volume: Optional[float]
     raw: dict | None = None
 
 
@@ -193,6 +208,68 @@ class BreezeClient:
             ))
         return enriched
 
+    def get_option_chain(
+        self,
+        *,
+        stock_code: str,
+        expiry: date,
+        right: Optional[str] = None,
+    ) -> list[OptionContract]:
+        """Pull the NSE option chain for an underlying + expiry.
+
+        Args:
+          stock_code: ICICI broker code for the underlying (e.g. 'NIFTY',
+            'BANKNIFTY', 'RELIANCE', 'EXIIND'). NOT the NSE ticker.
+          expiry: Python date.
+          right: 'call' / 'put' to filter, or None for both.
+        """
+        expiry_iso = _breeze_expiry(expiry)
+        rights = ["call", "put"] if right is None else [right]
+        out: list[OptionContract] = []
+
+        for r in rights:
+            try:
+                resp = self._sdk.get_option_chain_quotes(
+                    stock_code=stock_code,
+                    exchange_code="NFO",
+                    product_type="options",
+                    expiry_date=expiry_iso,
+                    right=r,
+                )
+            except Exception as e:
+                msg = str(e).lower()
+                if "session" in msg or "auth" in msg or "expired" in msg:
+                    raise BreezeSessionExpired(str(e)) from e
+                raise BreezeError(str(e)) from e
+
+            if not isinstance(resp, dict):
+                continue
+            err = resp.get("Error") or resp.get("error")
+            if err:
+                # 'no data for this expiry on the put side' should not fail
+                # the whole fetch — skip and continue with the other side.
+                msg = str(err).lower()
+                if "no" in msg and ("data" in msg or "result" in msg or "record" in msg):
+                    continue
+                if "session" in msg or "auth" in msg:
+                    raise BreezeSessionExpired(str(err))
+                raise BreezeError(str(err))
+
+            records = resp.get("Success") or resp.get("success") or []
+            if not isinstance(records, list):
+                continue
+            for rec in records:
+                if not isinstance(rec, dict):
+                    continue
+                try:
+                    out.append(_parse_option(rec, default_right=r, default_expiry=expiry.isoformat()))
+                except (ValueError, TypeError):
+                    continue
+
+        # Sort by strike, calls first then puts at the same strike.
+        out.sort(key=lambda c: (c.strike_price, 0 if c.right == "call" else 1))
+        return out
+
     def _lookup_name(self, exchange_code: str, stock_code: str) -> tuple[str, str]:
         """Resolve a Breeze stock_code → (exchange_stock_code, company_name)
         via get_names(). Returns ('', '') if the SDK call fails. Never raises."""
@@ -252,3 +329,50 @@ def _parse_holding(r: dict) -> BrokerHolding:
         company_name=_first(r, _NAME_KEYS),
         raw=r,
     )
+
+
+_BID_KEYS = ("best_bid_price", "bid", "best_bid", "bid_price")
+_ASK_KEYS = ("best_offer_price", "ask", "best_ask", "offer", "best_offer", "ask_price")
+_LTP_KEYS = ("ltp", "last_price", "last_traded_price", "current_market_price")
+_OI_KEYS = ("open_interest", "openInterest", "OI", "oi")
+_VOL_KEYS = ("total_quantity_traded", "volume", "ttv", "total_volume_traded")
+_STRIKE_KEYS = ("strike_price", "strike", "strikePrice")
+_RIGHT_KEYS = ("right", "option_type", "type")
+
+
+def _coerce_num(v) -> Optional[float]:
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_option(r: dict, *, default_right: str, default_expiry: str) -> OptionContract:
+    right_raw = (_first(r, _RIGHT_KEYS) or default_right or "").strip().lower()
+    if right_raw not in ("call", "put"):
+        # Breeze sometimes returns "CE"/"PE"
+        if right_raw in ("ce", "c"):
+            right_raw = "call"
+        elif right_raw in ("pe", "p"):
+            right_raw = "put"
+        else:
+            right_raw = default_right
+    return OptionContract(
+        stock_code=str(r.get("stock_code") or "").strip(),
+        expiry_date=str(r.get("expiry_date") or default_expiry).split("T")[0],
+        strike_price=float(_first(r, _STRIKE_KEYS, 0) or 0),
+        right=right_raw,
+        bid=_coerce_num(_first(r, _BID_KEYS)),
+        ask=_coerce_num(_first(r, _ASK_KEYS)),
+        ltp=_coerce_num(_first(r, _LTP_KEYS)),
+        open_interest=_coerce_num(_first(r, _OI_KEYS)),
+        volume=_coerce_num(_first(r, _VOL_KEYS)),
+        raw=r,
+    )
+
+
+def _breeze_expiry(d: date) -> str:
+    """Breeze wants ISO 8601 with time at 06:00:00.000Z."""
+    return f"{d.isoformat()}T06:00:00.000Z"

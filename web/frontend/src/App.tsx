@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Dashboard } from "./pages/Dashboard";
 import { InsightsPage } from "./pages/Insights";
 import { LookupPage } from "./pages/Lookup";
+import { OptionsPage } from "./pages/Options";
 import { PortfolioPage } from "./pages/Portfolio";
 import { TopBar, type TabKey } from "./components/TopBar";
 import { api } from "./api";
@@ -41,6 +42,7 @@ export default function App() {
         {tab === "dashboard" && <Dashboard onLoadedAt={setLoadedAt} />}
         {tab === "insights" && <InsightsPage />}
         {tab === "lookup" && <LookupPage />}
+        {tab === "options" && <OptionsPage />}
         {tab === "portfolio" && <PortfolioPage />}
       </main>
     </div>
