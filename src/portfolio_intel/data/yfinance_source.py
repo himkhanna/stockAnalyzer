@@ -6,6 +6,8 @@ Zerodha Kite, Upstox) requires no edits elsewhere.
 """
 from __future__ import annotations
 
+import random
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -44,14 +46,23 @@ class YFinanceSource(DataSource):
         ticker, qualified = self._ticker(symbol, market)
 
         # fast_info is cheaper and more reliable than .info, which sometimes
-        # returns mostly-empty dicts for Indian tickers.
-        try:
-            fi = ticker.fast_info
-            price = _coerce_float(getattr(fi, "last_price", None))
-            prev_close = _coerce_float(getattr(fi, "previous_close", None))
-            currency = getattr(fi, "currency", None) or market.currency
-        except Exception as e:  # yfinance can raise a variety of network errors
-            raise DataSourceError(f"fast_info failed for {qualified}: {e}") from e
+        # returns mostly-empty dicts for Indian tickers. Retry with backoff —
+        # Yahoo throttles during burst refreshes. The history fallback below
+        # picks up if fast_info still has no price after retries.
+        price = prev_close = None
+        currency = market.currency
+        for attempt in range(4):
+            try:
+                fi = ticker.fast_info
+                price = _coerce_float(getattr(fi, "last_price", None))
+                prev_close = _coerce_float(getattr(fi, "previous_close", None))
+                currency = getattr(fi, "currency", None) or market.currency
+            except Exception:
+                pass
+            if price is not None:
+                break
+            if attempt < 3:
+                time.sleep((0.6 * (2 ** attempt)) + random.uniform(0, 0.3))
 
         # Fall back to 1-day history when fast_info gives us nothing.
         if price is None:
@@ -138,10 +149,19 @@ class YFinanceSource(DataSource):
 
     @staticmethod
     def _safe_history(ticker, period: str, interval: str) -> Optional[pd.DataFrame]:
-        try:
-            return ticker.history(period=period, interval=interval, auto_adjust=False)
-        except Exception:
-            return None
+        # Yahoo throttles aggressively when many tickers are fetched in tight
+        # sequence (the dashboard refresh path can hit 70+). On empty/error,
+        # back off and retry a few times — non-fatal if all attempts fail.
+        for attempt in range(4):
+            try:
+                df = ticker.history(period=period, interval=interval, auto_adjust=False)
+            except Exception:
+                df = None
+            if df is not None and not df.empty:
+                return df
+            if attempt < 3:
+                time.sleep((0.6 * (2 ** attempt)) + random.uniform(0, 0.3))
+        return df
 
 
 def _coerce_float(v) -> Optional[float]:
