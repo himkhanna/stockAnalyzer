@@ -128,10 +128,15 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 
 def cmd_digest(args: argparse.Namespace) -> int:
+    from ..data.finnhub_news import FinnhubNewsSource
+    from ..llm.ollama import OllamaError, generate
+    from ..llm.prompts import SYSTEM_PROMPT, build_user_prompt
+    from ..news.router import fetch_news
+    from ..news.sentiment import tally
+
     symbol, market = _resolve_ticker(args.ticker, args.market)
     source = YFinanceSource()
 
-    # Check for portfolio position so we can show position-aware context.
     store = PortfolioStore(args.db)
     holding = store.get(symbol, market.code)
     position_note: Optional[str] = None
@@ -142,56 +147,94 @@ def cmd_digest(args: argparse.Namespace) -> int:
             f"(added {holding.date_added.isoformat()})"
         )
 
+    # ---- Data + technicals ----
     try:
-        digest = build_digest(
-            symbol,
-            market,
-            data_source=source,
-            period=args.period,
-            run_llm=not args.no_llm,
-            model=args.model,
-            position_note=position_note,
-        )
-    except DataSourceError as e:
+        df = source.get_history(symbol, market, period=args.period)
+        snap = compute_snapshot(df)
+    except (DataSourceError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
-    snap = digest.snapshot
-    print(f"\n=== {digest.symbol}.{market.code} digest ===")
-    _print_snapshot(digest.symbol, market, snap, q=digest.quote)
+    quote: Optional[Quote] = None
+    try:
+        quote = source.get_quote(symbol, market)
+    except DataSourceError:
+        pass
 
-    s = digest.sentiment
+    print(f"\n=== {symbol}.{market.code} digest ===")
+    _print_snapshot(symbol, market, snap, q=quote)
+
+    # ---- News + sentiment ----
+    news = fetch_news(symbol, market, data_source=source, finnhub=FinnhubNewsSource())
+    sentiment = tally(news)
+
     print()
-    if s.total == 0:
-        print(f"  News        no items found")
+    if sentiment.total == 0:
+        print("  News        no items found")
     else:
-        themes = f"  themes: {', '.join(s.themes)}" if s.themes else ""
+        themes = f"  themes: {', '.join(sentiment.themes)}" if sentiment.themes else ""
         print(
-            f"  News (7d)   {s.total} items  "
-            f"{s.positive} pos / {s.neutral} neu / {s.negative} neg  ({s.label}){themes}"
+            f"  News (7d)   {sentiment.total} items  "
+            f"{sentiment.positive} pos / {sentiment.neutral} neu / {sentiment.negative} neg  "
+            f"({sentiment.label}){themes}"
         )
-        for t in s.sample_titles[:3]:
+        for t in sentiment.sample_titles[:3]:
             print(f"              - {t}")
 
-    if holding is not None and digest.quote is not None:
+    if holding is not None and quote is not None:
         cost_total = holding.cost_basis * holding.shares
-        mv = digest.quote.price * holding.shares
+        mv = quote.price * holding.shares
         pnl = mv - cost_total
         pct = (pnl / cost_total * 100.0) if cost_total else 0.0
         sym = market.currency_symbol
         print()
         print(
             f"  Position    {holding.shares:g} sh @ {sym}{holding.cost_basis:,.2f}  "
-            f"now {sym}{digest.quote.price:,.2f}  "
+            f"now {sym}{quote.price:,.2f}  "
             f"P&L {sym}{pnl:,.2f} ({pct:+.2f}%)"
         )
 
+    # ---- Synthesis (streamed) ----
     print()
-    if digest.synthesis:
-        print(f"Synthesis ({digest.model_used}):")
-        print(digest.synthesis)
-    elif digest.synthesis_error:
-        print(f"(synthesis skipped: {digest.synthesis_error})")
+    if args.no_llm:
+        print("(synthesis skipped: --no-llm)")
+        return 0
+
+    user_prompt = build_user_prompt(
+        symbol=symbol,
+        market_code=market.code,
+        currency_symbol=market.currency_symbol,
+        snap=snap,
+        sentiment=sentiment,
+        news=news,
+        position_note=position_note,
+    )
+    print(f"Synthesis ({args.model}):")
+
+    def _emit(chunk: str) -> None:
+        sys.stdout.write(chunk)
+        sys.stdout.flush()
+
+    try:
+        resp = generate(
+            user_prompt,
+            system=SYSTEM_PROMPT,
+            model=args.model,
+            on_token=_emit,
+        )
+    except OllamaError as e:
+        # Newline in case partial output went to stdout before the error.
+        print()
+        print(f"(synthesis failed: {e})")
+        return 0
+
+    print()  # final newline after the streamed paragraph
+    if resp.duration_ms:
+        secs = resp.duration_ms / 1000.0
+        tok = resp.eval_count or 0
+        rate = (tok / secs) if secs else 0
+        print(f"  [{tok} tokens in {secs:.1f}s, {rate:.1f} tok/s]")
+    return 0
     else:
         print("(synthesis skipped: --no-llm)")
     return 0

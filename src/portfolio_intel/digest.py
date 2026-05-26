@@ -11,7 +11,7 @@ Graceful degradation rules (from CLAUDE.md):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from .data.base import DataSource, DataSourceError
 from .data.finnhub_news import FinnhubNewsSource
@@ -48,6 +48,7 @@ def build_digest(
     run_llm: bool = True,
     model: str = DEFAULT_MODEL,
     position_note: Optional[str] = None,
+    on_token: Optional[Callable[[str], None]] = None,
 ) -> Digest:
     df = data_source.get_history(symbol, market, period=period, interval=interval)
     snap = compute_snapshot(df)
@@ -76,7 +77,12 @@ def build_digest(
             position_note=position_note,
         )
         try:
-            resp = generate(user_prompt, system=SYSTEM_PROMPT, model=model)
+            resp = generate(
+                user_prompt,
+                system=SYSTEM_PROMPT,
+                model=model,
+                on_token=on_token,
+            )
             synthesis = resp.text
             model_used = resp.model
         except OllamaError as e:
