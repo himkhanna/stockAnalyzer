@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "../api";
 import { EmptyState } from "../components/EmptyState";
+import { TickerCombo } from "../components/TickerCombo";
 import type { Holding, HoldingIn, ImportResult } from "../types";
 
 export function PortfolioPage() {
@@ -267,11 +268,14 @@ function AddHoldingForm({ onAdded }: { onAdded: () => void }) {
           if (form.ticker && form.shares > 0) m.mutate();
         }}
       >
-        <Field label="Ticker">
-          <input
-            className="input"
+        <Field label="Ticker or company">
+          <TickerCombo
             value={form.ticker}
-            onChange={(e) => setForm({ ...form, ticker: e.target.value })}
+            onChange={(v) => setForm((f) => ({ ...f, ticker: v }))}
+            onPick={(hit) =>
+              setForm((f) => ({ ...f, ticker: hit.symbol, market: hit.market }))
+            }
+            placeholder="AAPL or Reliance Industries"
           />
         </Field>
         <Field label="Market">

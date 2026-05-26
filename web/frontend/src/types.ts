@@ -106,3 +106,16 @@ export interface Lookup {
   row: CardRow;
   markdown?: string | null;
 }
+
+export interface SearchHit {
+  symbol: string;
+  name: string;
+  market: string;
+  exchange: string;
+  quote_type: string;
+}
+
+export interface SearchOut {
+  query: string;
+  hits: SearchHit[];
+}

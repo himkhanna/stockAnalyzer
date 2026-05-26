@@ -4,6 +4,7 @@ import { useMutation } from "@tanstack/react-query";
 
 import { api } from "../api";
 import { StockCard } from "../components/StockCard";
+import { TickerCombo } from "../components/TickerCombo";
 import type { Lookup } from "../types";
 
 export function LookupPage() {
@@ -39,12 +40,12 @@ export function LookupPage() {
         }}
       >
         <div className="flex-1 min-w-[200px]">
-          <label className="text-xs text-zinc-500 mb-1 block">Ticker</label>
-          <input
-            className="input"
+          <label className="text-xs text-zinc-500 mb-1 block">Ticker or company name</label>
+          <TickerCombo
             value={raw}
-            onChange={(e) => setRaw(e.target.value)}
-            placeholder="AAPL or RELIANCE.NS"
+            onChange={setRaw}
+            onPick={(hit) => setMarket(hit.market)}
+            placeholder="AAPL or Reliance Industries"
             autoFocus
           />
         </div>

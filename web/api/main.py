@@ -20,6 +20,7 @@ from .routers import digest as digest_router
 from .routers import holdings as holdings_router
 from .routers import lookup as lookup_router
 from .routers import portfolio as portfolio_router
+from .routers import search as search_router
 
 
 @asynccontextmanager
@@ -48,6 +49,7 @@ app.include_router(holdings_router.router, prefix="/api/holdings", tags=["holdin
 app.include_router(portfolio_router.router, prefix="/api/portfolio", tags=["portfolio"])
 app.include_router(lookup_router.router, prefix="/api/lookup", tags=["lookup"])
 app.include_router(digest_router.router, prefix="/api/digest", tags=["digest"])
+app.include_router(search_router.router, prefix="/api/search", tags=["search"])
 
 
 @app.get("/api/health")

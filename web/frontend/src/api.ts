@@ -6,6 +6,7 @@ import type {
   HoldingIn,
   ImportResult,
   Lookup,
+  SearchOut,
 } from "./types";
 
 const BASE = "/api";
@@ -34,6 +35,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
     });
   } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") throw e;
     throw new ApiError(
       "Backend unreachable on :8765. Start it with:\nuvicorn web.api.main:app --reload --port 8765",
       0,
@@ -119,6 +121,12 @@ export const api = {
       `/lookup/${encodeURIComponent(ticker)}${qs ? `?${qs}` : ""}`,
     );
   },
+
+  search: (q: string, limit = 10, signal?: AbortSignal) =>
+    request<SearchOut>(
+      `/search?q=${encodeURIComponent(q)}&limit=${limit}`,
+      { signal },
+    ),
 
   getDigest: (symbol: string, market: string) =>
     request<DigestPayload>(
