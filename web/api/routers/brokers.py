@@ -159,6 +159,35 @@ def icici_sync_preview() -> SyncPreview:
     return _diff_against_store(holdings)
 
 
+@router.get("/icici/debug/names/{stock_code}")
+def icici_debug_names(stock_code: str) -> dict:
+    """Try several exchange_code variants against Breeze's get_names() so we
+    can see which one (if any) actually returns ISIN + company name."""
+    cfg = get_store().broker_get(_BROKER)
+    if not cfg or not _is_session_live(cfg):
+        raise HTTPException(status_code=400, detail="not connected")
+
+    try:
+        from breeze_connect import BreezeConnect  # type: ignore
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"breeze-connect missing: {e}")
+
+    sdk = BreezeConnect(api_key=cfg["api_key"])
+    try:
+        sdk.generate_session(api_secret=cfg["api_secret"], session_token=cfg["session_token"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"session generate failed: {e}")
+
+    results: dict = {}
+    for ex in ("NSE", "NSEEQ", "BSE", "BSEEQ"):
+        try:
+            resp = sdk.get_names(exchange_code=ex, stock_code=stock_code)
+            results[ex] = {"ok": True, "resp": resp}
+        except Exception as e:
+            results[ex] = {"ok": False, "error": str(e), "type": type(e).__name__}
+    return {"stock_code": stock_code, "by_exchange": results}
+
+
 @router.get("/icici/debug/holdings")
 def icici_debug_holdings() -> dict:
     """Return the raw Breeze response so we can see exactly which fields it
