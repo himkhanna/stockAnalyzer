@@ -159,6 +159,37 @@ def icici_sync_preview() -> SyncPreview:
     return _diff_against_store(holdings)
 
 
+@router.get("/icici/debug/holdings")
+def icici_debug_holdings() -> dict:
+    """Return the raw Breeze response so we can see exactly which fields it
+    sends (key names vary between accounts). Read-only; no PII beyond what
+    you already gave Breeze. Useful for diagnosing 'all unresolved' issues."""
+    cfg = get_store().broker_get(_BROKER)
+    if not cfg or not cfg.get("api_key") or not cfg.get("api_secret"):
+        raise HTTPException(status_code=400, detail="ICICI credentials not configured.")
+    if not _is_session_live(cfg):
+        raise HTTPException(status_code=401, detail="ICICI session expired.")
+    try:
+        client = BreezeClient(cfg["api_key"])
+        client.connect(cfg["api_secret"], cfg["session_token"])
+        holdings = client.get_holdings()
+    except BreezeNotInstalled as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except (BreezeError, BreezeSessionExpired) as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    sample = [h.raw for h in holdings[:3] if h.raw is not None]
+    all_keys: set[str] = set()
+    for h in holdings:
+        if isinstance(h.raw, dict):
+            all_keys.update(h.raw.keys())
+    return {
+        "count": len(holdings),
+        "all_keys_seen": sorted(all_keys),
+        "sample": sample,
+    }
+
+
 @router.post("/icici/sync/apply", response_model=SyncApplyResult)
 def icici_sync_apply(
     replace_india: bool = Query(
@@ -253,6 +284,17 @@ def _diff_against_store(holdings: list[BrokerHolding]) -> SyncPreview:
                 source = res.source
         except Exception:
             resolved_ticker = None
+        # If ISIN+name didn't resolve, try Yahoo-searching the broker's stock_code
+        # directly. ICICI uses short codes like EXIIND / GABIND that Yahoo's
+        # fuzzy search often maps to the real NSE listing (EXIDEIND, GABRIEL).
+        if resolved_ticker is None and h.stock_code:
+            try:
+                res = resolver.resolve(name=h.stock_code)
+                if res is not None:
+                    resolved_ticker = res.bare_symbol
+                    source = (res.source or "") + "_via_code"
+            except Exception:
+                pass
 
         action = "unresolved"
         existing_shares: Optional[float] = None
