@@ -3,7 +3,7 @@
 Thin layer over the existing portfolio_intel modules — does no math itself.
 Endpoints map 1:1 to what the UI needs.
 
-Run (dev): uvicorn web.api.main:app --reload --port 8000
+Run (dev): uvicorn web.api.main:app --reload --port 8765
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Permissive CORS for local dev — Vite runs on 5173, FastAPI on 8000.
+# Permissive CORS for local dev — Vite runs on 5173, FastAPI on 8765.
 # Production serves the built frontend from this same process so CORS isn't needed.
 app.add_middleware(
     CORSMiddleware,

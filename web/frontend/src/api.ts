@@ -35,7 +35,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     });
   } catch (e) {
     throw new ApiError(
-      "Backend unreachable on :8000. Start it with:\nuvicorn web.api.main:app --reload --port 8000",
+      "Backend unreachable on :8765. Start it with:\nuvicorn web.api.main:app --reload --port 8765",
       0,
       "unreachable",
     );
@@ -50,7 +50,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // Vite proxy returns 5xx (often with no/HTML body) when uvicorn isn't running.
     if (res.status >= 500 && !looksLikeJson(ct, text)) {
       throw new ApiError(
-        `Backend unreachable on :8000 (proxy returned ${res.status}). Start it with:\nuvicorn web.api.main:app --reload --port 8000`,
+        `Backend unreachable on :8765 (proxy returned ${res.status}). Start it with:\nuvicorn web.api.main:app --reload --port 8765`,
         res.status,
         "unreachable",
       );
@@ -62,7 +62,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // 200 but HTML — usually the Vite SPA fallback intercepting because the proxy
     // path didn't match, or a stale service worker.
     throw new ApiError(
-      "Backend returned a non-JSON response (likely the SPA fallback). Is uvicorn running on :8000? Try:\nuvicorn web.api.main:app --reload --port 8000",
+      "Backend returned a non-JSON response (likely the SPA fallback). Is uvicorn running on :8765? Try:\nuvicorn web.api.main:app --reload --port 8765",
       res.status,
       "non_json",
     );

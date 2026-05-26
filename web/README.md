@@ -17,13 +17,13 @@ cd ../..
 
 ## Dev — run both processes
 
-Terminal 1 — backend on :8000
+Terminal 1 — backend on :8765
 
 ```powershell
-uvicorn web.api.main:app --reload --port 8000
+uvicorn web.api.main:app --reload --port 8765
 ```
 
-Terminal 2 — frontend dev server on :5173 (proxies /api → :8000)
+Terminal 2 — frontend dev server on :5173 (proxies /api → :8765)
 
 ```powershell
 cd web/frontend
@@ -38,10 +38,10 @@ Open http://localhost:5173
 cd web/frontend
 npm run build
 cd ../..
-uvicorn web.api.main:app --port 8000
+uvicorn web.api.main:app --port 8765
 ```
 
-Then open http://localhost:8000 — the backend serves the built React app.
+Then open http://localhost:8765 — the backend serves the built React app.
 
 ## Env
 
