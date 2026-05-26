@@ -13,7 +13,9 @@ returns booleans + an expiry timestamp only.
 """
 from __future__ import annotations
 
+import json
 from datetime import date as date_, datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -36,6 +38,24 @@ from ..state import get_store
 
 router = APIRouter()
 _BROKER = "icici_breeze"
+_BROKER_OVERRIDES_FILE = Path(".broker_overrides.json")
+
+
+def _load_broker_overrides() -> dict[str, str]:
+    """Map of ICICI stock_code (uppercase) -> NSE bare ticker (uppercase).
+    Loaded fresh every sync so edits don't require a restart."""
+    if not _BROKER_OVERRIDES_FILE.exists():
+        return {}
+    try:
+        raw = json.loads(_BROKER_OVERRIDES_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        if k.startswith("_") or not isinstance(v, str):
+            continue
+        out[k.strip().upper()] = v.strip().upper()
+    return out
 
 
 class CredentialsIn(BaseModel):
@@ -303,6 +323,7 @@ def _fetch_holdings() -> list[BrokerHolding]:
 def _diff_against_store(holdings: list[BrokerHolding]) -> SyncPreview:
     store = get_store()
     resolver = TickerResolver()
+    broker_overrides = _load_broker_overrides()
 
     rows: list[BrokerHoldingPreview] = []
     add = update = unchanged = unresolved = 0
@@ -316,9 +337,15 @@ def _diff_against_store(holdings: list[BrokerHolding]) -> SyncPreview:
 
         resolved_ticker: Optional[str] = None
         source: Optional[str] = None
+        # Highest priority: manual broker-code override (handles ETFs and
+        # other instruments Breeze get_names can't resolve).
+        override = broker_overrides.get(h.stock_code.upper())
+        if override:
+            resolved_ticker = override
+            source = "broker_override"
         # Fast path: Breeze's get_names() already gave us the real NSE/BSE
         # ticker — use it directly, no Yahoo search needed.
-        if h.exchange_stock_code:
+        elif h.exchange_stock_code:
             resolved_ticker = h.exchange_stock_code.upper()
             source = "breeze_get_names"
         else:

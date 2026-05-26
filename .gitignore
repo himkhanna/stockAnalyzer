@@ -12,6 +12,7 @@ venv/
 .mypy_cache/
 .ruff_cache/
 .ticker_cache.json
+.broker_overrides.json
 .upload.csv
 digests/
 .rows_cache.pkl
