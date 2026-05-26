@@ -16,6 +16,12 @@ import sys
 from datetime import date
 from typing import Optional
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # Pick up .env in cwd / parent dirs before reading env vars.
+except ImportError:
+    pass
+
 from ..data.base import DataSource, DataSourceError
 from ..data.models import Quote
 from ..data.yfinance_source import YFinanceSource
