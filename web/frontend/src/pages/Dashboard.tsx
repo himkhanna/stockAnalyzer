@@ -87,9 +87,16 @@ export function Dashboard({ onLoadedAt }: Props) {
     );
   }
   if (q.error) {
+    const msg = (q.error as Error).message;
+    const [head, ...rest] = msg.split("\n");
     return (
       <EmptyState title="Could not load portfolio">
-        {(q.error as Error).message}
+        <div>{head}</div>
+        {rest.length > 0 && (
+          <pre className="mt-2 text-xs bg-zinc-100 dark:bg-zinc-800 rounded px-3 py-2 inline-block text-left whitespace-pre-wrap">
+            {rest.join("\n")}
+          </pre>
+        )}
       </EmptyState>
     );
   }

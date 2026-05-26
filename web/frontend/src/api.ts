@@ -10,17 +10,69 @@ import type {
 
 const BASE = "/api";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-    ...init,
-  });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => res.statusText);
-    throw new Error(`${res.status}: ${detail}`);
+export class ApiError extends Error {
+  status: number;
+  kind: "unreachable" | "non_json" | "http";
+  constructor(message: string, status: number, kind: ApiError["kind"]) {
+    super(message);
+    this.status = status;
+    this.kind = kind;
   }
+}
+
+function looksLikeJson(ct: string | null, body: string): boolean {
+  if (ct && ct.includes("application/json")) return true;
+  const trimmed = body.trimStart();
+  return trimmed.startsWith("{") || trimmed.startsWith("[");
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+      ...init,
+    });
+  } catch (e) {
+    throw new ApiError(
+      "Backend unreachable on :8000. Start it with:\nuvicorn web.api.main:app --reload --port 8000",
+      0,
+      "unreachable",
+    );
+  }
+
   if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+
+  const ct = res.headers.get("content-type");
+  const text = await res.text();
+
+  if (!res.ok) {
+    // Vite proxy returns 5xx (often with no/HTML body) when uvicorn isn't running.
+    if (res.status >= 500 && !looksLikeJson(ct, text)) {
+      throw new ApiError(
+        `Backend unreachable on :8000 (proxy returned ${res.status}). Start it with:\nuvicorn web.api.main:app --reload --port 8000`,
+        res.status,
+        "unreachable",
+      );
+    }
+    throw new ApiError(`${res.status}: ${text || res.statusText}`, res.status, "http");
+  }
+
+  if (!looksLikeJson(ct, text)) {
+    // 200 but HTML — usually the Vite SPA fallback intercepting because the proxy
+    // path didn't match, or a stale service worker.
+    throw new ApiError(
+      "Backend returned a non-JSON response (likely the SPA fallback). Is uvicorn running on :8000? Try:\nuvicorn web.api.main:app --reload --port 8000",
+      res.status,
+      "non_json",
+    );
+  }
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new ApiError("Backend returned malformed JSON.", res.status, "non_json");
+  }
 }
 
 export const api = {
