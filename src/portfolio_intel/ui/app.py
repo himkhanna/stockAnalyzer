@@ -1,21 +1,27 @@
 """Portfolio Intelligence — Streamlit dashboard.
 
 Design choices, informed by CLAUDE.md and the user's downside-protection lens:
-- Compact cards in a grid, expandable to full detail. 15-stock portfolio
-  scannable in ~30 seconds.
+- Compact cards in a responsive grid with inline price sparklines; a 15-stock
+  portfolio is scannable in ~30 seconds.
 - Sell / Strong Sell signals get the loudest colour — those are the ones
   worth acting on for a downside-protection user.
+- A "Needs attention" spotlight surfaces strong sells + overweight positions
+  before the full grid, so the most important holdings can't be missed.
 - Per-currency summary strip at the top — CLAUDE.md forbids silent FX
   mixing, so each currency gets its own metric block.
+- Filters live in a horizontal toolbar above the grid (not buried in the
+  sidebar) so they feel like part of the dashboard.
 - Today's batch markdown files (if present) are read first; the LLM
   synthesis only runs on demand (button) because it's CPU-slow.
+- Rows are cached in session_state so filter changes don't trigger
+  re-fetching — only the explicit "Refresh data" button does.
 - No new computation lives here; this is a view layer.
 """
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date as date_
+from datetime import date as date_, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -45,7 +51,7 @@ st.set_page_config(
     page_title="Portfolio Intelligence",
     layout="wide",
     page_icon="📊",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 
@@ -59,72 +65,185 @@ SIGNAL_STYLES = {
     "Strong Buy":  ("#15803d", "#fff", "🚀"),
 }
 SIGNAL_ORDER = ["Strong Sell", "Sell", "Hold", "Buy", "Strong Buy"]
+SIGNAL_LINE_COLOR = {
+    "Strong Sell": "#7f1d1d",
+    "Sell":        "#dc2626",
+    "Hold":        "#737373",
+    "Buy":         "#16a34a",
+    "Strong Buy":  "#15803d",
+}
 
 CUSTOM_CSS = """
 <style>
-/* Card container */
+/* Tighten Streamlit defaults so the page feels like an app, not a doc. */
+.block-container { padding-top: 1.2rem !important; padding-bottom: 2rem !important; max-width: 1400px; }
+header[data-testid="stHeader"] { background: transparent; }
+section[data-testid="stSidebar"] { background: #fafafa; }
+
+/* App-style top bar */
+.topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 0 14px 0; border-bottom: 1px solid rgba(120,120,120,0.18);
+    margin-bottom: 18px;
+}
+.topbar .app-title { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.2px; }
+.topbar .app-subtitle { font-size: 0.78rem; color: #6b7280; margin-top: 2px; }
+
+/* KPI tiles */
+.kpi-grid { display: grid; gap: 12px; margin-bottom: 18px; }
+.kpi {
+    background: #fff; border: 1px solid rgba(120,120,120,0.18);
+    border-radius: 12px; padding: 14px 18px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+}
+.kpi .label {
+    font-size: 0.7rem; color: #6b7280;
+    text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600;
+}
+.kpi .value { font-size: 1.6rem; font-weight: 700; margin: 4px 0 2px 0; }
+.kpi .delta-up   { color: #16a34a; font-size: 0.85rem; font-weight: 600; }
+.kpi .delta-down { color: #dc2626; font-size: 0.85rem; font-weight: 600; }
+.kpi .delta-flat { color: #6b7280; font-size: 0.85rem; font-weight: 600; }
+.kpi .meta { font-size: 0.75rem; color: #6b7280; margin-top: 2px; }
+
+/* Stock card */
 .stock-card {
-    background: var(--secondary-background-color, #fafafa);
+    background: #fff;
     border: 1px solid rgba(120,120,120,0.18);
-    border-radius: 10px;
+    border-radius: 12px;
     padding: 14px 16px 12px 16px;
     margin-bottom: 8px;
     box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-    transition: box-shadow 0.15s ease-in-out;
+    transition: box-shadow 0.15s, transform 0.15s;
+    min-height: 178px;
 }
 .stock-card:hover {
-    box-shadow: 0 3px 10px rgba(0,0,0,0.08);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.08);
+    transform: translateY(-1px);
 }
-.stock-card .ticker {
-    font-size: 1.05rem; font-weight: 700; letter-spacing: 0.2px;
+.stock-card.attention {
+    border-left: 4px solid #dc2626;
 }
+.stock-card .head {
+    display: flex; justify-content: space-between; align-items: center;
+}
+.stock-card .ticker { font-size: 1.05rem; font-weight: 700; letter-spacing: 0.2px; }
 .stock-card .market {
-    font-size: 0.72rem; color: #6b7280; font-weight: 500;
+    font-size: 0.7rem; color: #6b7280; font-weight: 500;
     text-transform: uppercase; letter-spacing: 0.5px; margin-left: 6px;
 }
-.stock-card .price {
-    font-size: 1.35rem; font-weight: 600; margin: 4px 0 2px 0;
+.stock-card .pricerow {
+    display: flex; justify-content: space-between; align-items: flex-end;
+    margin: 6px 0 2px 0;
 }
-.stock-card .change-up   { color: #16a34a; font-weight: 500; }
-.stock-card .change-down { color: #dc2626; font-weight: 500; }
-.stock-card .change-flat { color: #6b7280; font-weight: 500; }
+.stock-card .price { font-size: 1.4rem; font-weight: 600; line-height: 1.1; }
+.stock-card .chg-up   { color: #16a34a; font-weight: 500; font-size: 0.9rem; }
+.stock-card .chg-down { color: #dc2626; font-weight: 500; font-size: 0.9rem; }
+.stock-card .chg-flat { color: #6b7280; font-weight: 500; font-size: 0.9rem; }
 .stock-card .meta {
-    font-size: 0.82rem; color: #6b7280; margin: 2px 0;
+    font-size: 0.78rem; color: #6b7280; margin: 4px 0 6px 0;
+    display: flex; flex-wrap: wrap; gap: 6px;
 }
+.stock-card .spark { margin: 4px 0 6px 0; }
 .stock-card .pnl-row {
     margin-top: 6px; padding-top: 6px;
     border-top: 1px dashed rgba(120,120,120,0.25);
     font-size: 0.85rem;
 }
 .stock-card .setup {
-    font-size: 0.78rem; color: #4b5563; margin-top: 4px;
+    font-size: 0.75rem; color: #4b5563; margin-top: 4px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+
+/* Signal pill */
 .sig-pill {
     display: inline-block; padding: 3px 10px; border-radius: 999px;
-    font-weight: 600; font-size: 0.78rem; letter-spacing: 0.3px;
+    font-weight: 600; font-size: 0.74rem; letter-spacing: 0.3px;
+    white-space: nowrap;
 }
+
+/* Tags */
 .tag {
-    display: inline-block; padding: 2px 8px; border-radius: 999px;
-    font-size: 0.7rem; font-weight: 500; margin-right: 4px;
+    display: inline-block; padding: 1px 8px; border-radius: 999px;
+    font-size: 0.68rem; font-weight: 600;
     background: rgba(120,120,120,0.12); color: #374151;
 }
 .tag-warn { background: #fef3c7; color: #92400e; }
 .tag-bad  { background: #fee2e2; color: #991b1b; }
 .tag-good { background: #dcfce7; color: #166534; }
-.summary-label { font-size: 0.7rem; color: #6b7280;
-    text-transform: uppercase; letter-spacing: 0.5px; }
+
+/* Section headers */
+.section-h {
+    display: flex; align-items: baseline; justify-content: space-between;
+    margin: 24px 0 10px 0; padding-bottom: 6px;
+    border-bottom: 1px solid rgba(120,120,120,0.18);
+}
+.section-h .title { font-size: 1.05rem; font-weight: 700; letter-spacing: -0.2px; }
+.section-h .sub { font-size: 0.78rem; color: #6b7280; }
+.attention-banner {
+    background: #fef2f2; border: 1px solid #fecaca;
+    border-radius: 10px; padding: 10px 14px; margin-bottom: 10px;
+    color: #991b1b; font-weight: 600; font-size: 0.85rem;
+}
+
+/* Empty state */
+.empty {
+    text-align: center; padding: 50px 20px;
+    background: #fafafa; border: 1px dashed #d4d4d8;
+    border-radius: 12px; color: #6b7280;
+}
+.empty .big { font-size: 1.1rem; font-weight: 600; color: #374151; margin-bottom: 4px; }
+
+/* Dark mode tweaks (Streamlit's dark theme inverts some bg vars). */
+@media (prefers-color-scheme: dark) {
+    .kpi, .stock-card { background: #1c1c1c; border-color: rgba(255,255,255,0.1); }
+    .kpi .value, .stock-card .ticker { color: #f5f5f5; }
+    .attention-banner { background: #2a1010; border-color: #5b2020; color: #fca5a5; }
+    .empty { background: #161616; border-color: #303030; }
+    section[data-testid="stSidebar"] { background: #131313; }
+}
 </style>
 """
 
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
-def signal_pill(label: str, score: float) -> str:
+# ---------------- Helpers: HTML fragments ----------------
+
+def _signal_pill_html(label: str, score: float) -> str:
     bg, fg, glyph = SIGNAL_STYLES.get(label, ("#52525b", "#fff", "—"))
     return (
         f"<span class='sig-pill' style='background:{bg};color:{fg}'>"
         f"{glyph} {label} ({score:+.1f})</span>"
+    )
+
+
+def _sparkline_svg(closes: list[float], color: str = "#16a34a", width: int = 220, height: int = 36) -> str:
+    """Render a tiny inline SVG sparkline from a list of closes. No deps."""
+    if not closes or len(closes) < 2:
+        return ""
+    lo, hi = min(closes), max(closes)
+    rng = (hi - lo) or 1.0
+    pad_y = 2
+    pts = []
+    n = len(closes)
+    for i, v in enumerate(closes):
+        x = i * (width - 2) / (n - 1) + 1
+        y = height - pad_y - (v - lo) / rng * (height - 2 * pad_y)
+        pts.append(f"{x:.1f},{y:.1f}")
+    # Choose line color from price direction if not provided explicitly.
+    polyline = (
+        f"<polyline fill='none' stroke='{color}' stroke-width='1.6' "
+        f"stroke-linecap='round' stroke-linejoin='round' points='{' '.join(pts)}'/>"
+    )
+    # Subtle fill underneath
+    poly_fill = f"M1,{height-pad_y} " + " ".join(f"L{p}" for p in pts) + f" L{width-1},{height-pad_y} Z"
+    fill = (
+        f"<path d='{poly_fill}' fill='{color}' fill-opacity='0.08'/>"
+    )
+    return (
+        f"<svg class='spark' width='100%' height='{height}' viewBox='0 0 {width} {height}' "
+        f"preserveAspectRatio='none'>{fill}{polyline}</svg>"
     )
 
 
@@ -139,7 +258,7 @@ def _source() -> YFinanceSource:
     return YFinanceSource()
 
 
-# ---------------- Helpers ----------------
+# ---------------- Data fetch ----------------
 
 def _today_dir(out_dir: Path) -> Path:
     return out_dir / date_.today().isoformat()
@@ -186,6 +305,7 @@ def _quick_card(symbol: str, market_code: str, period: str) -> dict | None:
         "setup_stop": digest.setup.stop if digest.setup else None,
         "setup_target": digest.setup.target if digest.setup else None,
         "setup_rr": digest.setup.risk_reward if digest.setup else None,
+        "recent_closes": digest.recent_closes,
     }
 
 
@@ -211,7 +331,6 @@ def _build_rows(items: list[BatchItem], period: str) -> list[CardRow]:
     rows: list[CardRow] = []
     bucket_totals: dict[str, float] = defaultdict(float)
 
-    # First pass: fetch cards + market values per currency bucket.
     for it in items:
         c = _quick_card(it.symbol, it.market.code, period)
         if c is None:
@@ -225,7 +344,6 @@ def _build_rows(items: list[BatchItem], period: str) -> list[CardRow]:
             bucket_totals[it.holding.currency] += row.market_value
         rows.append(row)
 
-    # Second pass: weight + overweight flag.
     for row in rows:
         if row.holding and row.market_value > 0:
             total = bucket_totals.get(row.holding.currency, 0.0)
@@ -238,13 +356,14 @@ def _build_rows(items: list[BatchItem], period: str) -> list[CardRow]:
 
 # ---------------- Card renderer ----------------
 
-def _render_card(row: CardRow, out_dir: Path, model: str) -> None:
+def _render_card(row: CardRow, out_dir: Path, model: str, *, attention: bool = False) -> None:
     c = row.card
     if c.get("error"):
         st.markdown(
-            f"<div class='stock-card'><div class='ticker'>"
-            f"{c.get('symbol','?')}<span class='market'>{c.get('market_code','?')}</span></div>"
-            f"<div class='meta tag tag-bad' style='margin-top:8px'>error: {c['error']}</div>"
+            f"<div class='stock-card'><div class='head'>"
+            f"<div><span class='ticker'>{c.get('symbol','?')}</span>"
+            f"<span class='market'>{c.get('market_code','?')}</span></div></div>"
+            f"<div class='meta'><span class='tag tag-bad'>error</span> {c['error']}</div>"
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -254,37 +373,57 @@ def _render_card(row: CardRow, out_dir: Path, model: str) -> None:
     symbol = c["symbol"]
     market_code = c["market_code"]
     holding = row.holding
+    closes = c.get("recent_closes") or []
 
     chg = c.get("change_pct")
     if chg is None:
         chg_html = ""
     elif chg > 0:
-        chg_html = f"<span class='change-up'>▲ {chg:+.2f}%</span>"
+        chg_html = f"<span class='chg-up'>▲ {chg:+.2f}%</span>"
     elif chg < 0:
-        chg_html = f"<span class='change-down'>▼ {chg:+.2f}%</span>"
+        chg_html = f"<span class='chg-down'>▼ {chg:+.2f}%</span>"
     else:
-        chg_html = f"<span class='change-flat'>0.00%</span>"
+        chg_html = "<span class='chg-flat'>0.00%</span>"
 
-    stale_tag = "<span class='tag tag-warn'>stale</span>" if c.get("stale") else ""
-    ow_tag = "<span class='tag tag-warn'>overweight</span>" if row.overweight else ""
+    # Sparkline color follows the signal so the line carries directional weight.
+    spark_color = SIGNAL_LINE_COLOR.get(c["score_label"], "#737373")
+    spark_html = _sparkline_svg(closes, color=spark_color)
 
-    header_html = (
-        f"<div class='stock-card'>"
-        f"<div style='display:flex;justify-content:space-between;align-items:flex-start'>"
+    tags = []
+    if c.get("stale"):
+        tags.append("<span class='tag tag-warn'>stale</span>")
+    if row.overweight:
+        tags.append("<span class='tag tag-warn'>overweight</span>")
+    if row.pnl_pct < -10:
+        tags.append("<span class='tag tag-bad'>−10%+</span>")
+    tags_html = " ".join(tags)
+
+    attention_cls = " attention" if attention else ""
+
+    html = (
+        f"<div class='stock-card{attention_cls}'>"
+        f"<div class='head'>"
         f"<div><span class='ticker'>{symbol}</span>"
         f"<span class='market'>{market_code}</span></div>"
-        f"<div>{signal_pill(c['score_label'], c['score_value'])}</div>"
+        f"<div>{_signal_pill_html(c['score_label'], c['score_value'])}</div>"
         f"</div>"
-        f"<div class='price'>{sym}{c['price']:,.2f} &nbsp;{chg_html}</div>"
-        f"<div class='meta'>RSI {c['rsi']:.0f} · {c['trend']} · "
-        f"news {c['sentiment_total']} ({c['sentiment_label']}) "
-        f"{stale_tag}{ow_tag}</div>"
+        f"<div class='pricerow'>"
+        f"<div class='price'>{sym}{c['price']:,.2f}</div>"
+        f"<div>{chg_html}</div>"
+        f"</div>"
+        f"{spark_html}"
+        f"<div class='meta'>"
+        f"<span>RSI {c['rsi']:.0f}</span>"
+        f"<span>· {c['trend']}</span>"
+        f"<span>· news {c['sentiment_total']} ({c['sentiment_label']})</span>"
+        f"{(' &nbsp;' + tags_html) if tags_html else ''}"
+        f"</div>"
     )
 
     if holding is not None and row.cost_total > 0:
-        pnl_color = "change-up" if row.pnl >= 0 else "change-down"
-        weight_txt = f" · {row.weight_pct:.1f}% of {holding.currency}" if row.weight_pct else ""
-        header_html += (
+        pnl_color = "chg-up" if row.pnl >= 0 else "chg-down"
+        weight_txt = f" · <strong>{row.weight_pct:.1f}%</strong> of {holding.currency}" if row.weight_pct else ""
+        html += (
             f"<div class='pnl-row'>"
             f"{holding.shares:g} sh @ {sym}{holding.cost_basis:,.2f} → "
             f"<span class='{pnl_color}'>{sym}{row.pnl:,.2f} ({row.pnl_pct:+.2f}%)</span>"
@@ -292,22 +431,22 @@ def _render_card(row: CardRow, out_dir: Path, model: str) -> None:
         )
 
     if c.get("setup_valid") and c.get("setup_target"):
-        header_html += (
+        html += (
             f"<div class='setup'>📐 entry {sym}{c['setup_entry']:,.2f} · "
             f"stop {sym}{c['setup_stop']:,.2f} · target {sym}{c['setup_target']:,.2f} · "
             f"RR {c['setup_rr']:.1f}:1</div>"
         )
 
-    header_html += "</div>"
-    st.markdown(header_html, unsafe_allow_html=True)
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
 
     md_path = _existing_md_for(symbol, Market.from_code(market_code), out_dir)
-    with st.expander("Full digest", expanded=False):
+    with st.expander("📄 Full digest"):
         if md_path is not None:
             st.markdown(md_path.read_text(encoding="utf-8"))
             st.caption(f"_from {md_path}_")
         else:
-            st.info("No full digest cached for today.")
+            st.caption("No full digest cached for today.")
             if st.button(
                 f"Generate digest for {symbol}.{market_code}",
                 key=f"gen_{symbol}_{market_code}",
@@ -330,14 +469,11 @@ def _render_card(row: CardRow, out_dir: Path, model: str) -> None:
                 st.rerun()
 
 
-# ---------------- Summary strip ----------------
+# ---------------- KPI / spotlight sections ----------------
 
-def _render_summary(rows: list[CardRow]) -> None:
-    """Per-currency totals + signal counts. CLAUDE.md: never silently mix
-    currencies into one number."""
+def _render_kpis(rows: list[CardRow]) -> None:
     valid = [r for r in rows if r.holding and not r.card.get("error")]
 
-    # Per-currency totals.
     by_ccy: dict[str, dict[str, float]] = defaultdict(lambda: {"mv": 0.0, "cost": 0.0, "n": 0})
     for r in valid:
         sym = r.card["currency_symbol"]
@@ -345,94 +481,131 @@ def _render_summary(rows: list[CardRow]) -> None:
         by_ccy[sym]["cost"] += r.cost_total
         by_ccy[sym]["n"] += 1
 
-    # Signal counts (across all rows that resolved, holding or not).
     sig_counts: dict[str, int] = defaultdict(int)
     for r in rows:
         lbl = r.card.get("score_label")
         if lbl:
             sig_counts[lbl] += 1
 
-    if not by_ccy and not sig_counts:
-        return
+    n_overweight = sum(1 for r in rows if r.overweight)
 
-    # Render currency totals as metric tiles, one column per currency.
     ccy_items = list(by_ccy.items())
-    if ccy_items:
-        cols = st.columns(len(ccy_items) + 1)
-        for col, (sym, agg) in zip(cols[:-1], ccy_items):
-            pnl = agg["mv"] - agg["cost"]
-            pnl_pct = (pnl / agg["cost"] * 100.0) if agg["cost"] else 0.0
-            col.metric(
-                label=f"{sym} portfolio ({int(agg['n'])} positions)",
-                value=f"{sym}{agg['mv']:,.0f}",
-                delta=f"{pnl:+,.0f} ({pnl_pct:+.2f}%)",
-                delta_color="normal",
-            )
-        # Last column: signal counts.
-        with cols[-1]:
-            st.markdown("<div class='summary-label'>signals</div>", unsafe_allow_html=True)
-            pills = []
-            for lbl in SIGNAL_ORDER:
-                n = sig_counts.get(lbl, 0)
-                if n == 0:
-                    continue
-                bg, fg, glyph = SIGNAL_STYLES[lbl]
-                pills.append(
-                    f"<span class='sig-pill' style='background:{bg};color:{fg};"
-                    f"margin-right:4px'>{glyph} {n}</span>"
-                )
+    # Layout: one tile per currency + signals tile + position-state tile.
+    n_tiles = len(ccy_items) + 2
+    cols = st.columns(n_tiles, gap="small")
+
+    for col, (sym, agg) in zip(cols[:len(ccy_items)], ccy_items):
+        pnl = agg["mv"] - agg["cost"]
+        pnl_pct = (pnl / agg["cost"] * 100.0) if agg["cost"] else 0.0
+        d_cls = "delta-up" if pnl > 0 else ("delta-down" if pnl < 0 else "delta-flat")
+        d_arrow = "▲" if pnl > 0 else ("▼" if pnl < 0 else "—")
+        with col:
             st.markdown(
-                " ".join(pills) if pills else "<span class='summary-label'>no signals yet</span>",
+                f"<div class='kpi'>"
+                f"<div class='label'>{sym} portfolio</div>"
+                f"<div class='value'>{sym}{agg['mv']:,.0f}</div>"
+                f"<div class='{d_cls}'>{d_arrow} {sym}{abs(pnl):,.0f} ({pnl_pct:+.2f}%)</div>"
+                f"<div class='meta'>{int(agg['n'])} positions · cost {sym}{agg['cost']:,.0f}</div>"
+                f"</div>",
                 unsafe_allow_html=True,
             )
-    else:
-        st.markdown("<div class='summary-label'>no holdings — use Lookup or Portfolio tab</div>",
-                    unsafe_allow_html=True)
+
+    # Signals tile
+    with cols[len(ccy_items)]:
+        pills = []
+        for lbl in SIGNAL_ORDER:
+            n = sig_counts.get(lbl, 0)
+            if n == 0:
+                continue
+            bg, fg, glyph = SIGNAL_STYLES[lbl]
+            pills.append(
+                f"<span class='sig-pill' style='background:{bg};color:{fg};"
+                f"margin:2px 4px 2px 0;display:inline-block'>{glyph} {n}</span>"
+            )
+        body = " ".join(pills) if pills else "<div class='meta'>no signals yet</div>"
+        st.markdown(
+            f"<div class='kpi'>"
+            f"<div class='label'>signals</div>"
+            f"<div style='margin-top:8px'>{body}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    # Position-state tile
+    with cols[len(ccy_items) + 1]:
+        winners = sum(1 for r in valid if r.pnl > 0)
+        losers = sum(1 for r in valid if r.pnl < 0)
+        st.markdown(
+            f"<div class='kpi'>"
+            f"<div class='label'>positions</div>"
+            f"<div class='value' style='font-size:1.05rem;margin-top:8px'>"
+            f"<span class='chg-up'>{winners} winners</span> · "
+            f"<span class='chg-down'>{losers} losers</span></div>"
+            f"<div class='meta'>{n_overweight} overweight (&gt;{DEFAULT_WEIGHTS.overweight_pct:.0f}%)</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
 
 
-# ---------------- Sidebar ----------------
+def _attention_rows(rows: list[CardRow]) -> list[CardRow]:
+    """Holdings that warrant a second look right now."""
+    out: list[CardRow] = []
+    seen: set[tuple] = set()
+    # 1) Strong Sell / Sell first
+    for r in rows:
+        if r.card.get("error"):
+            continue
+        if r.card.get("score_label") in ("Strong Sell", "Sell"):
+            key = (r.card["symbol"], r.card["market_code"])
+            if key not in seen:
+                seen.add(key); out.append(r)
+    # 2) Overweight that aren't already in
+    for r in rows:
+        if r.card.get("error") or not r.overweight:
+            continue
+        key = (r.card["symbol"], r.card["market_code"])
+        if key not in seen:
+            seen.add(key); out.append(r)
+    return out[:6]  # cap so the section doesn't dominate the page
+
+
+# ---------------- Top bar ----------------
+
+def _render_topbar(loaded_at: Optional[str], on_refresh_key: str) -> None:
+    cols = st.columns([5, 2, 1])
+    with cols[0]:
+        st.markdown(
+            "<div class='topbar'>"
+            "<div>"
+            "<div class='app-title'>📊 Portfolio Intelligence</div>"
+            "<div class='app-subtitle'>facts → signals → grounded synthesis · not advice</div>"
+            "</div></div>",
+            unsafe_allow_html=True,
+        )
+    with cols[1]:
+        if loaded_at:
+            st.caption(f"data loaded · {loaded_at}")
+    with cols[2]:
+        if st.button("🔄 Refresh", key=on_refresh_key, use_container_width=True,
+                     help="Re-fetch quotes & recompute. Filters apply instantly without this."):
+            _quick_card.clear()
+            st.session_state.pop("rows_cache", None)
+            st.rerun()
+
+
+# ---------------- Sidebar (settings only) ----------------
 
 with st.sidebar:
-    st.title("📊 Portfolio Intelligence")
-    st.caption("Personal stock analysis · facts → signals → grounded synthesis")
-
-    with st.expander("⚙ Settings", expanded=False):
-        db_path = st.text_input("Database", value="portfolio.db")
-        period = st.selectbox("History window", ["6mo", "1y", "2y", "5y"], index=1)
-        out_dir = Path(st.text_input("Digest output dir", value="digests"))
-        model = st.text_input("Ollama model", value=DEFAULT_MODEL)
-
+    st.markdown("### ⚙ Settings")
+    db_path = st.text_input("Database", value="portfolio.db")
+    period = st.selectbox("History window", ["6mo", "1y", "2y", "5y"], index=1)
+    out_dir = Path(st.text_input("Digest output dir", value="digests"))
+    model = st.text_input("Ollama model", value=DEFAULT_MODEL)
     st.divider()
-    st.markdown("**Filters**")
-    sig_filter = st.multiselect(
-        "Signal", SIGNAL_ORDER, default=[],
-        help="Empty = show all signals.",
+    st.caption(
+        "Filters & sort live in the **Dashboard** toolbar.\n\n"
+        "The sidebar is collapsed by default — toggle the « icon to hide it."
     )
-    mkt_filter = st.multiselect(
-        "Market", ["US", "NSE", "BSE"], default=[],
-        help="Empty = all markets.",
-    )
-    pos_filter = st.selectbox(
-        "Position",
-        ["All", "Overweight only", "Winners (P&L > 0)", "Losers (P&L < 0)"],
-        index=0,
-    )
-    search = st.text_input("Search ticker", value="", placeholder="e.g. RELI").strip().upper()
-
-    st.divider()
-    sort_by = st.selectbox(
-        "Sort by",
-        ["Signal (Sell first)", "Signal (Buy first)", "Ticker",
-         "Weight (largest first)", "P&L % (worst first)", "P&L % (best first)"],
-        index=0,
-    )
-
-    st.divider()
-    if st.button("🔄 Refresh data", use_container_width=True,
-                 help="Re-fetch quotes & recompute signals. Filters/sort apply instantly without refetching."):
-        _quick_card.clear()
-        st.session_state.pop("rows_cache", None)
-        st.rerun()
 
 
 store = _store(db_path)
@@ -448,15 +621,10 @@ tab_dash, tab_lookup, tab_portfolio = st.tabs(["📈 Dashboard", "🔍 Lookup", 
 with tab_dash:
     items = items_from_portfolio(store)
 
-    if not items:
-        st.info(
-            "**No holdings yet.** Use the **💼 Portfolio** tab to import a CSV "
-            "or add a holding manually, or jump to **🔍 Lookup** to analyse any ticker."
-        )
-    else:
-        # Build rows ONCE per (portfolio composition, period) and stash in
-        # session_state so changing filters / sort doesn't refetch anything.
-        # Refresh button clears this so the next render rebuilds.
+    # Build rows ONCE per (portfolio, period) and stash in session_state.
+    loaded_at: Optional[str] = None
+    rows: list[CardRow] = []
+    if items:
         fingerprint = (
             db_path, period,
             tuple(sorted((it.symbol, it.market.code) for it in items)),
@@ -468,25 +636,78 @@ with tab_dash:
         else:
             with st.spinner(f"loading {len(items)} holding(s)..."):
                 rows = _build_rows(items, period)
-            loaded_at = date_.today().isoformat()
+            loaded_at = datetime.now().strftime("%H:%M")
             st.session_state["rows_cache"] = {
                 "fp": fingerprint, "rows": rows, "loaded_at": loaded_at,
             }
 
-        _render_summary(rows)
-        st.divider()
+    _render_topbar(loaded_at, on_refresh_key="refresh_dash")
 
-        # Top action bar.
-        bar = st.columns([3, 1, 1])
-        with bar[0]:
-            st.caption(
-                f"Data loaded {loaded_at} · filters/sort apply instantly · "
-                f"use the sidebar **Refresh data** button to refetch."
+    if not items:
+        st.markdown(
+            "<div class='empty'>"
+            "<div class='big'>No holdings yet</div>"
+            "Use the <strong>💼 Portfolio</strong> tab to import a CSV or add holdings manually, "
+            "or jump to <strong>🔍 Lookup</strong> to analyse any ticker."
+            "</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        _render_kpis(rows)
+
+        # Attention spotlight
+        attn = _attention_rows(rows)
+        if attn:
+            st.markdown(
+                "<div class='section-h'><div class='title'>🚨 Needs attention</div>"
+                f"<div class='sub'>{len(attn)} holding(s) — sells &amp; overweight first</div></div>",
+                unsafe_allow_html=True,
             )
-        with bar[2]:
+            for row_start in range(0, len(attn), 3):
+                cols = st.columns(3, gap="small")
+                for col, row in zip(cols, attn[row_start:row_start + 3]):
+                    with col:
+                        _render_card(row, out_dir, model, attention=True)
+
+        # Toolbar: filters live ABOVE the grid (not in sidebar)
+        st.markdown(
+            "<div class='section-h'><div class='title'>📋 All holdings</div>"
+            "<div class='sub'>filters apply instantly · no refetch</div></div>",
+            unsafe_allow_html=True,
+        )
+
+        tb = st.columns([1.4, 1, 1, 1.2, 1.4, 1])
+        with tb[0]:
+            search = st.text_input("Search", value="",
+                                   placeholder="ticker…",
+                                   label_visibility="collapsed").strip().upper()
+        with tb[1]:
+            sig_filter = st.multiselect("Signal", SIGNAL_ORDER, default=[],
+                                        placeholder="Signal",
+                                        label_visibility="collapsed")
+        with tb[2]:
+            mkt_filter = st.multiselect("Market", ["US", "NSE", "BSE"], default=[],
+                                        placeholder="Market",
+                                        label_visibility="collapsed")
+        with tb[3]:
+            pos_filter = st.selectbox(
+                "Position",
+                ["All positions", "Overweight only", "Winners (P&L > 0)", "Losers (P&L < 0)"],
+                index=0,
+                label_visibility="collapsed",
+            )
+        with tb[4]:
+            sort_by = st.selectbox(
+                "Sort",
+                ["Signal (Sell first)", "Signal (Buy first)", "Ticker",
+                 "Weight (largest first)", "P&L % (worst first)", "P&L % (best first)"],
+                index=0,
+                label_visibility="collapsed",
+            )
+        with tb[5]:
             run_full = st.button(
-                "🤖 Generate today's batch (LLM)",
-                help="Runs the full digest pipeline including LLM synthesis. Slow on CPU.",
+                "🤖 LLM batch",
+                help="Run the full LLM digest pipeline. Slow on CPU.",
                 use_container_width=True,
             )
 
@@ -510,7 +731,6 @@ with tab_dash:
             st.session_state.pop("rows_cache", None)
             st.rerun()
 
-        # Apply filters.
         filtered = rows
         if sig_filter:
             filtered = [r for r in filtered if r.card.get("score_label") in sig_filter]
@@ -525,7 +745,6 @@ with tab_dash:
         if search:
             filtered = [r for r in filtered if search in r.card.get("symbol", "")]
 
-        # Sort.
         sell_idx = {lbl: i for i, lbl in enumerate(SIGNAL_ORDER)}
         buy_idx = {lbl: i for i, lbl in enumerate(reversed(SIGNAL_ORDER))}
         if sort_by == "Signal (Sell first)":
@@ -544,7 +763,11 @@ with tab_dash:
         st.caption(f"Showing **{len(filtered)}** of {len(rows)} holdings.")
 
         if not filtered:
-            st.info("No holdings match the current filters.")
+            st.markdown(
+                "<div class='empty'><div class='big'>No holdings match the filters</div>"
+                "Clear a filter to see more.</div>",
+                unsafe_allow_html=True,
+            )
         else:
             for row_start in range(0, len(filtered), 3):
                 cols = st.columns(3, gap="small")
@@ -556,21 +779,28 @@ with tab_dash:
 # ====================== Lookup ======================
 
 with tab_lookup:
-    st.subheader("Look up any ticker")
-    st.caption("Same pipeline as your portfolio — works for any US/NSE/BSE ticker, even one you don't own.")
+    _render_topbar(None, on_refresh_key="refresh_lookup")
+    st.markdown(
+        "<div class='section-h'><div class='title'>🔍 Look up any ticker</div>"
+        "<div class='sub'>same pipeline as your portfolio · works for any US/NSE/BSE ticker</div></div>",
+        unsafe_allow_html=True,
+    )
 
-    col1, col2, col3 = st.columns([2, 1, 1])
+    col1, col2, col3, col4 = st.columns([3, 1.2, 1.2, 1])
     with col1:
         raw_ticker = st.text_input("Ticker", value="AAPL",
-                                   help="Bare symbol (AAPL) or qualified (RELIANCE.NS).")
+                                   help="Bare symbol (AAPL) or qualified (RELIANCE.NS).",
+                                   label_visibility="collapsed", placeholder="ticker e.g. AAPL or RELIANCE.NS")
     with col2:
         market_flag = st.selectbox("Market", ["(auto)", "US", "NSE", "BSE"], index=0,
-                                   help="Used when ticker is bare (no .NS / .BO suffix).")
+                                   label_visibility="collapsed")
     with col3:
-        run_llm_lookup = st.checkbox("Run LLM synthesis", value=False,
+        run_llm_lookup = st.checkbox("LLM synthesis", value=False,
                                      help="Slow on CPU. Off = signals + setup only.")
+    with col4:
+        do_lookup = st.button("Analyse", type="primary", use_container_width=True)
 
-    if st.button("Analyse", type="primary"):
+    if do_lookup:
         explicit = Market.from_code(market_flag) if market_flag != "(auto)" else None
         symbol, market = parse_ticker(raw_ticker, default_market=explicit)
         with st.spinner(f"analysing {symbol}.{market.code}..."):
@@ -598,19 +828,26 @@ with tab_lookup:
 # ====================== Portfolio ======================
 
 with tab_portfolio:
-    # CSV import is the most-used action — put it first.
-    st.subheader("📥 Import CSV")
+    _render_topbar(None, on_refresh_key="refresh_portfolio")
+
+    # Import first — most-used action.
+    st.markdown(
+        "<div class='section-h'><div class='title'>📥 Import CSV</div>"
+        "<div class='sub'>ICICI Direct PortFolioEqtSummary or canonical format</div></div>",
+        unsafe_allow_html=True,
+    )
     st.caption(
         "Auto-detects ICICI Direct's PortFolioEqtSummary export (resolves NSE tickers from ISIN) "
-        "**or** the canonical `ticker, market, shares, cost_basis, date` format. "
+        "or the canonical `ticker, market, shares, cost_basis, date` format. "
         "See `examples/portfolio.example.csv`."
     )
     up = st.file_uploader("Drop a CSV here", type=["csv"], label_visibility="collapsed")
-    cols = st.columns([1, 3])
-    with cols[0]:
+    icols = st.columns([1, 1, 3])
+    with icols[0]:
         replace = st.checkbox("Replace existing holdings", value=False)
-    with cols[1]:
-        do_import = st.button("Import", type="primary", disabled=(up is None))
+    with icols[1]:
+        do_import = st.button("Import", type="primary", disabled=(up is None),
+                              use_container_width=True)
     if up is not None and do_import:
         tmp = Path(".upload.csv")
         tmp.write_bytes(up.getvalue())
@@ -639,7 +876,7 @@ with tab_portfolio:
                 }
                 for err in result.errors
             ]
-            st.dataframe(rows_err, use_container_width=True)
+            st.dataframe(rows_err, use_container_width=True, hide_index=True)
             st.caption(
                 "To fix unresolved rows, add entries to `.ticker_overrides.json` "
                 "in the project root (`{\"ISIN\": \"NSE_SYMBOL\"}`) and re-import."
@@ -652,12 +889,15 @@ with tab_portfolio:
                 store.upsert(h)
             st.success(f"Imported {len(result.holdings)} holding(s).")
             _quick_card.clear()
+            st.session_state.pop("rows_cache", None)
             st.rerun()
 
-    st.divider()
-
     # Holdings table.
-    st.subheader("📋 Current holdings")
+    st.markdown(
+        "<div class='section-h'><div class='title'>📋 Current holdings</div>"
+        "<div class='sub'>edit or remove below</div></div>",
+        unsafe_allow_html=True,
+    )
     holdings = store.all()
     if holdings:
         st.dataframe(
@@ -677,25 +917,34 @@ with tab_portfolio:
         )
 
         with st.expander("🗑 Remove a holding"):
-            rm_cols = st.columns([2, 1, 1])
+            rm_cols = st.columns([3, 1])
             with rm_cols[0]:
                 rm_choice = st.selectbox(
                     "Pick one",
                     [f"{h.ticker}.{h.market_code}" for h in holdings],
                     key="rm_choice",
+                    label_visibility="collapsed",
                 )
-            with rm_cols[2]:
-                if st.button("Remove", type="secondary"):
+            with rm_cols[1]:
+                if st.button("Remove", type="secondary", use_container_width=True):
                     sym, mkt = rm_choice.rsplit(".", 1)
                     store.remove(sym, mkt)
                     _quick_card.clear()
+                    st.session_state.pop("rows_cache", None)
                     st.success(f"Removed {rm_choice}.")
                     st.rerun()
     else:
-        st.info("No holdings yet. Import a CSV above or add one manually below.")
+        st.markdown(
+            "<div class='empty'><div class='big'>No holdings yet</div>"
+            "Import a CSV above or add one manually below.</div>",
+            unsafe_allow_html=True,
+        )
 
-    st.divider()
-    st.subheader("➕ Add a holding manually")
+    # Manual add.
+    st.markdown(
+        "<div class='section-h'><div class='title'>➕ Add a holding manually</div></div>",
+        unsafe_allow_html=True,
+    )
     with st.form("add_holding", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -717,4 +966,5 @@ with tab_portfolio:
             ))
             st.success(f"Added/updated {symbol}.{market.code}.")
             _quick_card.clear()
+            st.session_state.pop("rows_cache", None)
             st.rerun()

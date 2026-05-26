@@ -56,6 +56,7 @@ class Digest:
     synthesis: Optional[str] = None
     synthesis_error: Optional[str] = None
     model_used: Optional[str] = None
+    recent_closes: list[float] = field(default_factory=list)  # last ~60 daily closes for sparklines
 
 
 def build_digest(
@@ -153,6 +154,7 @@ def build_digest(
         synthesis=synthesis,
         synthesis_error=synthesis_error,
         model_used=model_used,
+        recent_closes=[float(x) for x in df["close"].tail(60).tolist()],
     )
 
 
