@@ -183,10 +183,20 @@ def icici_debug_holdings() -> dict:
     for h in holdings:
         if isinstance(h.raw, dict):
             all_keys.update(h.raw.keys())
+    enriched_sample = [
+        {
+            "stock_code": h.stock_code,
+            "exchange_code": h.exchange_code,
+            "isin": h.isin,
+            "company_name": h.company_name,
+        }
+        for h in holdings[:5]
+    ]
     return {
         "count": len(holdings),
         "all_keys_seen": sorted(all_keys),
-        "sample": sample,
+        "raw_sample": sample,
+        "enriched_sample": enriched_sample,
     }
 
 
