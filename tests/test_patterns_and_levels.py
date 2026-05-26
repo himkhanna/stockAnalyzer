@@ -60,6 +60,23 @@ def test_hammer_long_lower_wick():
     assert bool(hammer(df).iloc[-1]) is True
 
 
+def test_patterns_handle_zero_range_bars_without_raising():
+    """Halted / no-trade bars can have high == low, producing a 0 span. The
+    pattern functions must return a regular boolean Series with False there,
+    not propagate pd.NA (which would make bool(...) raise downstream)."""
+    bars = [
+        _bar(100, 100, 100, 100),     # zero range
+        _bar(100, 102, 99, 101),
+        _bar(100, 100, 100, 100),     # zero range again
+    ]
+    df = _df(bars)
+    for fn in (bullish_engulfing, bearish_engulfing, doji, hammer):
+        out = fn(df)
+        assert out.dtype == bool
+        for v in out:
+            assert isinstance(bool(v), bool)  # must not raise
+
+
 def test_levels_cluster_nearby_highs_and_pick_nearest():
     # Build a series with two clear resistance shelves around 110 and 120,
     # and supports around 90 and 100, with current close = 105.
