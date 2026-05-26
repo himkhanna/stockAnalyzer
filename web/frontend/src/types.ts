@@ -192,6 +192,51 @@ export interface RiskPanel {
   biggest_losers: CardRow[];
 }
 
+export type AlertKind =
+  | "price_above"
+  | "price_below"
+  | "rsi_above"
+  | "rsi_below"
+  | "score_at_or_above"
+  | "score_at_or_below"
+  | "score_flip_buy"
+  | "score_flip_sell"
+  | "pct_drop_day"
+  | "pct_rise_day";
+
+export interface AlertIn {
+  ticker: string;
+  market: string;
+  kind: AlertKind;
+  threshold: number;
+  note?: string;
+}
+
+export interface Alert {
+  id: number;
+  ticker: string;
+  market: string;
+  kind: AlertKind;
+  threshold: number;
+  note: string | null;
+  active: boolean;
+  created_at: string;
+  last_fired_at: string | null;
+}
+
+export interface AlertEvent {
+  id: number;
+  alert_id: number;
+  ticker: string;
+  market: string;
+  kind: AlertKind;
+  threshold: number;
+  fired_at: string;
+  triggered_value: number | null;
+  message: string | null;
+  acknowledged: boolean;
+}
+
 export interface Backtest {
   symbol: string;
   market: string;

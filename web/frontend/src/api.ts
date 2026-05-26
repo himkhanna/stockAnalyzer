@@ -1,4 +1,7 @@
 import type {
+  Alert,
+  AlertEvent,
+  AlertIn,
   Backtest,
   CardRow,
   Dashboard,
@@ -133,6 +136,25 @@ export const api = {
       `/backtest/${encodeURIComponent(symbol)}/${encodeURIComponent(market)}`,
       { method: "POST" },
     ),
+
+  listAlerts: () => request<Alert[]>("/alerts"),
+  addAlert: (a: AlertIn) =>
+    request<Alert>("/alerts", { method: "POST", body: JSON.stringify(a) }),
+  removeAlert: (id: number) =>
+    request<void>(`/alerts/${id}`, { method: "DELETE" }),
+  toggleAlert: (id: number, active: boolean) =>
+    request<Alert>(
+      `/alerts/${id}/active?active=${active ? "true" : "false"}`,
+      { method: "PATCH" },
+    ),
+  listAlertEvents: (unacknowledgedOnly = false) =>
+    request<AlertEvent[]>(
+      `/alerts/events${unacknowledgedOnly ? "?unacknowledged_only=true" : ""}`,
+    ),
+  ackAlertEvent: (id: number) =>
+    request<void>(`/alerts/events/${id}/ack`, { method: "POST" }),
+  ackAllAlertEvents: () =>
+    request<void>(`/alerts/events/ack_all`, { method: "POST" }),
 
   listWatchlist: () => request<WatchlistItem[]>("/watchlist"),
   addWatchlist: (item: WatchlistItemIn) =>

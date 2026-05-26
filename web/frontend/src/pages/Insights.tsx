@@ -1,4 +1,4 @@
-import { AlertTriangle, CalendarClock, Loader2, Trash2, TrendingDown, TrendingUp } from "lucide-react";
+import { AlertTriangle, Bell, BellOff, CalendarClock, Check, CheckCheck, Loader2, Trash2, TrendingDown, TrendingUp } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -8,6 +8,9 @@ import { StockCard } from "../components/StockCard";
 import { TickerCombo } from "../components/TickerCombo";
 import { fmtCurrency, fmtPct, SIGNAL_STYLES } from "../lib/format";
 import type {
+  Alert,
+  AlertEvent,
+  AlertKind,
   ConvictionRow,
   EarningsItem,
   IndexSnapshot,
@@ -53,6 +56,7 @@ export function InsightsPage() {
         </p>
       </header>
 
+      <AlertsSection />
       <MarketPulse indices={d.indices} />
       <ConvictionBoard rows={d.conviction} />
       <WatchlistSection scanned={d.watchlist} />
@@ -534,3 +538,323 @@ function RiskView({ risk }: { risk: RiskPanel }) {
 
 // Silence unused-import warning for fmtCurrency when grid is empty.
 void fmtCurrency;
+
+// --- Alerts ---
+
+const ALERT_KIND_LABEL: Record<AlertKind, string> = {
+  price_above: "Price ≥",
+  price_below: "Price ≤",
+  rsi_above: "RSI ≥",
+  rsi_below: "RSI ≤",
+  score_at_or_above: "Score ≥",
+  score_at_or_below: "Score ≤",
+  score_flip_buy: "Flips to Buy",
+  score_flip_sell: "Flips to Sell",
+  pct_drop_day: "Drops % today ≥",
+  pct_rise_day: "Rises % today ≥",
+};
+
+const ALERT_THRESHOLD_HINT: Record<AlertKind, string> = {
+  price_above: "price level",
+  price_below: "price level",
+  rsi_above: "RSI value (typically 70)",
+  rsi_below: "RSI value (typically 30)",
+  score_at_or_above: "score value (e.g. 6 = Strong Buy)",
+  score_at_or_below: "score value (e.g. -6 = Strong Sell)",
+  score_flip_buy: "(ignored — flips into Buy region)",
+  score_flip_sell: "(ignored — flips into Sell region)",
+  pct_drop_day: "% drop (positive value)",
+  pct_rise_day: "% rise (positive value)",
+};
+
+function AlertsSection() {
+  const qc = useQueryClient();
+  const events = useQuery({
+    queryKey: ["alert-events"],
+    queryFn: () => api.listAlertEvents(false),
+  });
+  const rules = useQuery({
+    queryKey: ["alerts"],
+    queryFn: api.listAlerts,
+  });
+
+  const unack = (events.data ?? []).filter((e) => !e.acknowledged);
+  const recent = (events.data ?? []).slice(0, 20);
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-base font-bold flex items-center gap-2">
+          <Bell size={16} className="text-zinc-500" />
+          Alerts
+          {unack.length > 0 && (
+            <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1 text-[11px] font-semibold rounded-full bg-bear-500 text-white">
+              {unack.length}
+            </span>
+          )}
+        </h2>
+        {unack.length > 0 && (
+          <button
+            className="btn-ghost text-xs"
+            onClick={async () => {
+              await api.ackAllAlertEvents();
+              qc.invalidateQueries({ queryKey: ["alert-events"] });
+            }}
+          >
+            <CheckCheck size={14} /> Mark all read
+          </button>
+        )}
+      </div>
+
+      <AlertEventsList events={recent} onAcked={() => qc.invalidateQueries({ queryKey: ["alert-events"] })} />
+      <AlertRuleForm onAdded={() => qc.invalidateQueries({ queryKey: ["alerts"] })} />
+      <AlertRulesList rules={rules.data ?? []} onChanged={() => qc.invalidateQueries({ queryKey: ["alerts"] })} />
+    </section>
+  );
+}
+
+function AlertEventsList({
+  events,
+  onAcked,
+}: {
+  events: AlertEvent[];
+  onAcked: () => void;
+}) {
+  if (events.length === 0) {
+    return (
+      <EmptyState title="No alerts have fired yet">
+        Add a rule below. It will be evaluated on every dashboard refresh and
+        anything that crosses your threshold will land here.
+      </EmptyState>
+    );
+  }
+  return (
+    <div className="card overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-zinc-50 dark:bg-zinc-900/50 text-zinc-500 text-xs uppercase tracking-wider">
+          <tr>
+            <th className="text-left px-4 py-2.5">Ticker</th>
+            <th className="text-left px-4 py-2.5">Rule</th>
+            <th className="text-left px-4 py-2.5">Message</th>
+            <th className="text-left px-4 py-2.5">Fired</th>
+            <th className="px-4 py-2.5"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {events.map((e) => (
+            <tr
+              key={e.id}
+              className={`border-t border-zinc-200 dark:border-zinc-800 ${
+                e.acknowledged ? "opacity-50" : ""
+              }`}
+            >
+              <td className="px-4 py-2.5 font-semibold">
+                {e.ticker}
+                <span className="text-xs text-zinc-500 ml-2">{e.market}</span>
+              </td>
+              <td className="px-4 py-2.5 text-xs text-zinc-500">
+                {ALERT_KIND_LABEL[e.kind] ?? e.kind} {e.threshold}
+              </td>
+              <td className="px-4 py-2.5">{e.message ?? "—"}</td>
+              <td className="px-4 py-2.5 text-xs text-zinc-500">{e.fired_at}</td>
+              <td className="px-4 py-2.5 text-right">
+                {!e.acknowledged && (
+                  <button
+                    className="btn-ghost text-xs"
+                    onClick={async () => {
+                      await api.ackAlertEvent(e.id);
+                      onAcked();
+                    }}
+                    aria-label="Mark read"
+                  >
+                    <Check size={14} />
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function AlertRuleForm({ onAdded }: { onAdded: () => void }) {
+  const [ticker, setTicker] = useState("");
+  const [market, setMarket] = useState("US");
+  const [kind, setKind] = useState<AlertKind>("price_above");
+  const [threshold, setThreshold] = useState<string>("");
+  const [note, setNote] = useState("");
+
+  const add = useMutation({
+    mutationFn: () =>
+      api.addAlert({
+        ticker,
+        market,
+        kind,
+        threshold: parseFloat(threshold) || 0,
+        note,
+      }),
+    onSuccess: () => {
+      setThreshold("");
+      setNote("");
+      onAdded();
+    },
+  });
+
+  const flipKind = kind === "score_flip_buy" || kind === "score_flip_sell";
+
+  return (
+    <form
+      className="card p-4 grid grid-cols-1 md:grid-cols-6 gap-3 items-end"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!ticker.trim()) return;
+        if (!flipKind && !threshold) return;
+        add.mutate();
+      }}
+    >
+      <div className="md:col-span-2">
+        <label className="text-xs text-zinc-500 mb-1 block">Ticker</label>
+        <TickerCombo
+          value={ticker}
+          onChange={setTicker}
+          onPick={(hit) => {
+            setTicker(hit.symbol);
+            setMarket(hit.market);
+          }}
+          placeholder="AAPL or RELIANCE"
+        />
+      </div>
+      <div>
+        <label className="text-xs text-zinc-500 mb-1 block">Market</label>
+        <select className="input" value={market} onChange={(e) => setMarket(e.target.value)}>
+          <option value="US">US</option>
+          <option value="NSE">NSE (India)</option>
+          <option value="BSE">BSE (India)</option>
+          <option value="DFM">DFM (Dubai)</option>
+          <option value="ADX">ADX (Abu Dhabi)</option>
+        </select>
+      </div>
+      <div>
+        <label className="text-xs text-zinc-500 mb-1 block">When</label>
+        <select
+          className="input"
+          value={kind}
+          onChange={(e) => setKind(e.target.value as AlertKind)}
+        >
+          {(Object.keys(ALERT_KIND_LABEL) as AlertKind[]).map((k) => (
+            <option key={k} value={k}>
+              {ALERT_KIND_LABEL[k]}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className="text-xs text-zinc-500 mb-1 block">Threshold</label>
+        <input
+          className="input"
+          type="number"
+          step="any"
+          disabled={flipKind}
+          value={flipKind ? "" : threshold}
+          onChange={(e) => setThreshold(e.target.value)}
+          placeholder={ALERT_THRESHOLD_HINT[kind]}
+        />
+      </div>
+      <button
+        type="submit"
+        className="btn-primary"
+        disabled={
+          add.isPending || !ticker.trim() || (!flipKind && !threshold)
+        }
+      >
+        {add.isPending ? "Adding…" : "Add rule"}
+      </button>
+      <div className="md:col-span-6">
+        <label className="text-xs text-zinc-500 mb-1 block">Note (optional)</label>
+        <input
+          className="input"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="why this matters to you"
+        />
+      </div>
+      {add.error && (
+        <div className="md:col-span-6 text-sm text-bear-500">
+          {(add.error as Error).message}
+        </div>
+      )}
+    </form>
+  );
+}
+
+function AlertRulesList({
+  rules,
+  onChanged,
+}: {
+  rules: Alert[];
+  onChanged: () => void;
+}) {
+  if (rules.length === 0) return null;
+  return (
+    <div className="card overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-zinc-50 dark:bg-zinc-900/50 text-zinc-500 text-xs uppercase tracking-wider">
+          <tr>
+            <th className="text-left px-4 py-2.5">Ticker</th>
+            <th className="text-left px-4 py-2.5">Rule</th>
+            <th className="text-left px-4 py-2.5">Note</th>
+            <th className="text-left px-4 py-2.5">Last fired</th>
+            <th className="px-4 py-2.5"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {rules.map((r) => (
+            <tr
+              key={r.id}
+              className={`border-t border-zinc-200 dark:border-zinc-800 ${
+                r.active ? "" : "opacity-50"
+              }`}
+            >
+              <td className="px-4 py-2.5 font-semibold">
+                {r.ticker}
+                <span className="text-xs text-zinc-500 ml-2">{r.market}</span>
+              </td>
+              <td className="px-4 py-2.5 text-xs">
+                {ALERT_KIND_LABEL[r.kind] ?? r.kind}{" "}
+                {!(r.kind === "score_flip_buy" || r.kind === "score_flip_sell") && r.threshold}
+              </td>
+              <td className="px-4 py-2.5 text-zinc-500">{r.note || "—"}</td>
+              <td className="px-4 py-2.5 text-xs text-zinc-500">
+                {r.last_fired_at ?? "never"}
+              </td>
+              <td className="px-4 py-2.5 text-right flex gap-2 justify-end">
+                <button
+                  className="btn-ghost text-xs"
+                  onClick={async () => {
+                    await api.toggleAlert(r.id, !r.active);
+                    onChanged();
+                  }}
+                  aria-label={r.active ? "Disable" : "Enable"}
+                >
+                  {r.active ? <BellOff size={14} /> : <Bell size={14} />}
+                </button>
+                <button
+                  className="btn-ghost text-xs text-bear-500"
+                  onClick={async () => {
+                    await api.removeAlert(r.id);
+                    onChanged();
+                  }}
+                  aria-label="Delete"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}

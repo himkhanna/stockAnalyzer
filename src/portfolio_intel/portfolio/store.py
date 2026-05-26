@@ -40,6 +40,38 @@ CREATE TABLE IF NOT EXISTS signal_history (
     score_label  TEXT NOT NULL,
     PRIMARY KEY (ticker, market, captured_at)
 );
+
+CREATE TABLE IF NOT EXISTS alerts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker      TEXT NOT NULL,
+    market      TEXT NOT NULL,
+    kind        TEXT NOT NULL,    -- price_above|price_below|rsi_above|rsi_below|
+                                  -- score_flip_buy|score_flip_sell|
+                                  -- pct_drop_day|pct_rise_day|
+                                  -- score_at_or_above|score_at_or_below
+    threshold   REAL NOT NULL,
+    note        TEXT,
+    active      INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT NOT NULL,
+    last_fired_at TEXT
+);
+CREATE INDEX IF NOT EXISTS alerts_active_ix ON alerts(active);
+CREATE INDEX IF NOT EXISTS alerts_ticker_ix ON alerts(ticker, market);
+
+CREATE TABLE IF NOT EXISTS alert_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id    INTEGER NOT NULL,
+    ticker      TEXT NOT NULL,
+    market      TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    threshold   REAL NOT NULL,
+    fired_at    TEXT NOT NULL,
+    triggered_value REAL,
+    message     TEXT,
+    acknowledged INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(alert_id) REFERENCES alerts(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS alert_events_ack_ix ON alert_events(acknowledged, fired_at DESC);
 """
 
 
@@ -166,6 +198,98 @@ class PortfolioStore:
             if row is None:
                 return None
             return (float(row["score_value"]), row["score_label"], row["captured_at"])
+
+
+    # --- Alerts ---
+
+    def alert_add(self, ticker: str, market_code: str, kind: str,
+                  threshold: float, note: str = "") -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO alerts (ticker, market, kind, threshold, note, active, created_at)
+                VALUES (?, ?, ?, ?, ?, 1, ?)
+                """,
+                (ticker.upper(), market_code.upper(), kind, float(threshold),
+                 note, date.today().isoformat()),
+            )
+            return int(cur.lastrowid)
+
+    def alert_remove(self, alert_id: int) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM alerts WHERE id = ?", (alert_id,))
+            return cur.rowcount > 0
+
+    def alert_set_active(self, alert_id: int, active: bool) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE alerts SET active = ? WHERE id = ?",
+                (1 if active else 0, alert_id),
+            )
+            return cur.rowcount > 0
+
+    def alerts_list(self, *, active_only: bool = False) -> list[dict]:
+        sql = (
+            "SELECT id, ticker, market, kind, threshold, note, active, "
+            "created_at, last_fired_at FROM alerts"
+        )
+        if active_only:
+            sql += " WHERE active = 1"
+        sql += " ORDER BY active DESC, market, ticker, id"
+        with self._connect() as conn:
+            return [dict(r) for r in conn.execute(sql).fetchall()]
+
+    def alert_mark_fired(self, alert_id: int, fired_at: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE alerts SET last_fired_at = ? WHERE id = ?",
+                (fired_at, alert_id),
+            )
+
+    def alert_event_add(self, *, alert_id: int, ticker: str, market_code: str,
+                        kind: str, threshold: float, fired_at: str,
+                        triggered_value: Optional[float], message: str) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO alert_events
+                    (alert_id, ticker, market, kind, threshold, fired_at,
+                     triggered_value, message, acknowledged)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (alert_id, ticker.upper(), market_code.upper(), kind,
+                 float(threshold), fired_at,
+                 float(triggered_value) if triggered_value is not None else None,
+                 message),
+            )
+            return int(cur.lastrowid)
+
+    def alert_events_list(self, *, unacknowledged_only: bool = False,
+                          limit: int = 100) -> list[dict]:
+        sql = (
+            "SELECT id, alert_id, ticker, market, kind, threshold, fired_at, "
+            "triggered_value, message, acknowledged FROM alert_events"
+        )
+        if unacknowledged_only:
+            sql += " WHERE acknowledged = 0"
+        sql += " ORDER BY fired_at DESC LIMIT ?"
+        with self._connect() as conn:
+            return [dict(r) for r in conn.execute(sql, (limit,)).fetchall()]
+
+    def alert_event_ack(self, event_id: int) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE alert_events SET acknowledged = 1 WHERE id = ?",
+                (event_id,),
+            )
+            return cur.rowcount > 0
+
+    def alert_event_ack_all(self) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE alert_events SET acknowledged = 1 WHERE acknowledged = 0"
+            )
+            return cur.rowcount
 
 
 def _row_to_holding(row: sqlite3.Row) -> Holding:

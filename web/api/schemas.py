@@ -142,6 +142,41 @@ class BacktestOut(BaseModel):
     sentiment_used: bool = False  # honest caveat — see backtest/__init__.py
 
 
+# --- Alerts ---
+
+class AlertIn(BaseModel):
+    ticker: str
+    market: str
+    kind: str  # see ALERT_KINDS
+    threshold: float
+    note: Optional[str] = ""
+
+
+class AlertOut(BaseModel):
+    id: int
+    ticker: str
+    market: str
+    kind: str
+    threshold: float
+    note: Optional[str] = None
+    active: bool
+    created_at: str
+    last_fired_at: Optional[str] = None
+
+
+class AlertEventOut(BaseModel):
+    id: int
+    alert_id: int
+    ticker: str
+    market: str
+    kind: str
+    threshold: float
+    fired_at: str
+    triggered_value: Optional[float] = None
+    message: Optional[str] = None
+    acknowledged: bool
+
+
 # --- Insights page ---
 
 class WatchlistItemIn(BaseModel):

@@ -1,6 +1,9 @@
 import clsx from "clsx";
 import { BarChart3, Briefcase, Lightbulb, Moon, RefreshCw, Search, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+
+import { api } from "../api";
 
 export type TabKey = "dashboard" | "insights" | "lookup" | "portfolio";
 
@@ -23,6 +26,12 @@ export function TopBar({ tab, onTab, loadedAt, onRefresh, refreshing }: Props) {
   const [dark, setDark] = useState(() =>
     document.documentElement.classList.contains("dark"),
   );
+
+  const unackCount = useQuery({
+    queryKey: ["alert-events"],
+    queryFn: () => api.listAlertEvents(true),
+    refetchOnWindowFocus: true,
+  }).data?.length ?? 0;
 
   useEffect(() => {
     const stored = localStorage.getItem("theme");
@@ -51,12 +60,13 @@ export function TopBar({ tab, onTab, loadedAt, onRefresh, refreshing }: Props) {
           {TABS.map((t) => {
             const Icon = t.icon;
             const active = tab === t.key;
+            const showBadge = t.key === "insights" && unackCount > 0;
             return (
               <button
                 key={t.key}
                 onClick={() => onTab(t.key)}
                 className={clsx(
-                  "flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors",
+                  "relative flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors",
                   active
                     ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
                     : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800",
@@ -64,6 +74,11 @@ export function TopBar({ tab, onTab, loadedAt, onRefresh, refreshing }: Props) {
               >
                 <Icon size={15} />
                 <span className="hidden sm:inline">{t.label}</span>
+                {showBadge && (
+                  <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 text-[10px] font-semibold rounded-full bg-bear-500 text-white flex items-center justify-center">
+                    {unackCount > 9 ? "9+" : unackCount}
+                  </span>
+                )}
               </button>
             );
           })}

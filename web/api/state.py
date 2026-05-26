@@ -189,6 +189,7 @@ def get_dashboard(*, db_path: str = DB_PATH, period: str = DEFAULT_PERIOD,
         rows = _build_rows(items, period)
         loaded_at = datetime.now().strftime("%Y-%m-%d %H:%M")
         _persist_signals(store, rows, captured_at=loaded_at)
+        _evaluate_alerts(store, rows, captured_at=loaded_at)
         payload = {
             "fp": fp,
             "rows": rows,
@@ -224,6 +225,117 @@ def build_card_for(symbol: str, market: Market, period: str = DEFAULT_PERIOD) ->
     """Build a single CardRow for any (symbol, market) — used by lookup & insights."""
     c = _card_from_digest(symbol, market, period)
     return CardRow(card=c, holding=None)
+
+
+# --- Alerts evaluator -------------------------------------------------------
+
+_ALERT_KINDS = {
+    "price_above", "price_below",
+    "rsi_above", "rsi_below",
+    "score_at_or_above", "score_at_or_below",
+    "score_flip_buy", "score_flip_sell",
+    "pct_drop_day", "pct_rise_day",
+}
+
+
+def _evaluate_alerts(store: PortfolioStore, rows: list[CardRow], *, captured_at: str) -> None:
+    """Walk every active alert rule against the freshly-built rows. Fire an
+    alert_event when the condition holds. Non-fatal on errors — alerts must
+    never break the dashboard refresh."""
+    try:
+        alerts = store.alerts_list(active_only=True)
+    except Exception:
+        return
+    if not alerts:
+        return
+
+    # Index rows by (ticker, market) for O(1) lookup.
+    by_key: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        c = r.card
+        if c.get("error"):
+            continue
+        sym = (c.get("symbol") or "").upper()
+        mkt = (c.get("market_code") or "").upper()
+        if sym and mkt:
+            by_key[(sym, mkt)] = c
+
+    for a in alerts:
+        try:
+            card = by_key.get((a["ticker"].upper(), a["market"].upper()))
+            if card is None:
+                continue
+            kind = a["kind"]
+            if kind not in _ALERT_KINDS:
+                continue
+            threshold = float(a["threshold"])
+            triggered, value, msg = _check_alert(kind, threshold, card, store, captured_at)
+            if not triggered:
+                continue
+            store.alert_event_add(
+                alert_id=int(a["id"]),
+                ticker=a["ticker"],
+                market_code=a["market"],
+                kind=kind,
+                threshold=threshold,
+                fired_at=captured_at,
+                triggered_value=value,
+                message=msg,
+            )
+            store.alert_mark_fired(int(a["id"]), captured_at)
+        except Exception:
+            # One bad rule must not poison the rest.
+            continue
+
+
+def _check_alert(kind: str, threshold: float, card: dict,
+                 store: PortfolioStore, current_captured_at: str
+                 ) -> tuple[bool, Optional[float], str]:
+    sym = card.get("symbol", "")
+    mkt = card.get("market_code", "")
+
+    price = card.get("price")
+    rsi = card.get("rsi")
+    score_value = card.get("score_value")
+    score_label = card.get("score_label") or ""
+    change_pct = card.get("change_pct")
+
+    if kind == "price_above" and price is not None and price >= threshold:
+        return True, float(price), f"{sym} price {price:.2f} crossed ≥ {threshold:g}"
+    if kind == "price_below" and price is not None and price <= threshold:
+        return True, float(price), f"{sym} price {price:.2f} crossed ≤ {threshold:g}"
+    if kind == "rsi_above" and rsi is not None and rsi >= threshold:
+        return True, float(rsi), f"{sym} RSI {rsi:.0f} ≥ {threshold:g}"
+    if kind == "rsi_below" and rsi is not None and rsi <= threshold:
+        return True, float(rsi), f"{sym} RSI {rsi:.0f} ≤ {threshold:g}"
+    if kind == "score_at_or_above" and score_value is not None and score_value >= threshold:
+        return True, float(score_value), f"{sym} score {score_value:+.1f} ≥ {threshold:+g} ({score_label})"
+    if kind == "score_at_or_below" and score_value is not None and score_value <= threshold:
+        return True, float(score_value), f"{sym} score {score_value:+.1f} ≤ {threshold:+g} ({score_label})"
+    if kind == "pct_drop_day" and change_pct is not None and change_pct <= -abs(threshold):
+        return True, float(change_pct), f"{sym} dropped {change_pct:.2f}% today (≤ -{abs(threshold):g}%)"
+    if kind == "pct_rise_day" and change_pct is not None and change_pct >= abs(threshold):
+        return True, float(change_pct), f"{sym} rose {change_pct:.2f}% today (≥ +{abs(threshold):g}%)"
+
+    # Flip detection compares against the most recent prior captured signal.
+    if kind in ("score_flip_buy", "score_flip_sell") and score_value is not None:
+        prev = store.signal_previous(sym, mkt, current_captured_at)
+        if prev is None:
+            return False, None, ""
+        prev_value, prev_label, _ = prev
+        if kind == "score_flip_buy":
+            # bullish flip into Buy/Strong Buy territory (score >= 2.0)
+            if prev_value < 2.0 and score_value >= 2.0:
+                return True, float(score_value), (
+                    f"{sym} flipped to {score_label} ({prev_label} → {score_label})"
+                )
+        else:
+            if prev_value > -2.0 and score_value <= -2.0:
+                return True, float(score_value), (
+                    f"{sym} flipped to {score_label} ({prev_label} → {score_label})"
+                )
+
+    return False, None, ""
 
 
 def invalidate_dashboard() -> None:
