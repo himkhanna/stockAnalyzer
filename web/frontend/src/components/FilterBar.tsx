@@ -27,7 +27,7 @@ interface Props {
   shown: number;
 }
 
-const MARKETS = ["US", "NSE", "BSE"];
+const MARKETS = ["US", "NSE", "BSE", "DFM", "ADX"];
 
 export function FilterBar({ state, onChange, total, shown }: Props) {
   const toggleSignal = (s: SignalLabel) =>

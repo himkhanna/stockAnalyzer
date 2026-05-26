@@ -59,8 +59,10 @@ export function LookupPage() {
           >
             <option value="">(auto)</option>
             <option value="US">US</option>
-            <option value="NSE">NSE</option>
-            <option value="BSE">BSE</option>
+            <option value="NSE">NSE (India)</option>
+            <option value="BSE">BSE (India)</option>
+            <option value="DFM">DFM (Dubai)</option>
+            <option value="ADX">ADX (Abu Dhabi)</option>
           </select>
         </div>
         <label className="flex items-center gap-2 text-sm mb-2">

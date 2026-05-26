@@ -25,6 +25,8 @@ class Market(Enum):
     US = MarketSpec("US", "United States", "USD", "$", "", "America/New_York")
     NSE = MarketSpec("NSE", "National Stock Exchange of India", "INR", "₹", ".NS", "Asia/Kolkata")
     BSE = MarketSpec("BSE", "Bombay Stock Exchange", "INR", "₹", ".BO", "Asia/Kolkata")
+    DFM = MarketSpec("DFM", "Dubai Financial Market", "AED", "د.إ", ".AE", "Asia/Dubai")
+    ADX = MarketSpec("ADX", "Abu Dhabi Securities Exchange", "AED", "د.إ", ".AD", "Asia/Dubai")
 
     @property
     def code(self) -> str:
@@ -106,4 +108,6 @@ INDICES: list[tuple[str, str, str]] = [
     ("^NSEI",   "NIFTY 50",       "NSE"),
     ("^NSEBANK","NIFTY BANK",     "NSE"),
     ("^BSESN",  "SENSEX",         "BSE"),
+    ("^DFMGI",  "DFM General",    "DFM"),
+    ("^ADI",    "ADX General",    "ADX"),
 ]

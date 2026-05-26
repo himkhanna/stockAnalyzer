@@ -221,8 +221,10 @@ function WatchlistSection({ scanned }: { scanned: any[] }) {
             onChange={(e) => setMarket(e.target.value)}
           >
             <option value="US">US</option>
-            <option value="NSE">NSE</option>
-            <option value="BSE">BSE</option>
+            <option value="NSE">NSE (India)</option>
+            <option value="BSE">BSE (India)</option>
+            <option value="DFM">DFM (Dubai)</option>
+            <option value="ADX">ADX (Abu Dhabi)</option>
           </select>
         </div>
         <div className="flex-1 min-w-[160px]">

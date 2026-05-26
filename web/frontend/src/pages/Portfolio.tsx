@@ -285,8 +285,10 @@ function AddHoldingForm({ onAdded }: { onAdded: () => void }) {
             onChange={(e) => setForm({ ...form, market: e.target.value })}
           >
             <option value="US">US</option>
-            <option value="NSE">NSE</option>
-            <option value="BSE">BSE</option>
+            <option value="NSE">NSE (India)</option>
+            <option value="BSE">BSE (India)</option>
+            <option value="DFM">DFM (Dubai)</option>
+            <option value="ADX">ADX (Abu Dhabi)</option>
           </select>
         </Field>
         <Field label="Shares">

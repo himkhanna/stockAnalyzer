@@ -18,6 +18,13 @@ _US_EXCHANGES = {"NMS", "NYQ", "NCM", "NGM", "ASE", "PNK", "BTS", "NYE"}
 _EXCHANGE_TO_MARKET = {ex: "US" for ex in _US_EXCHANGES}
 _EXCHANGE_TO_MARKET["NSI"] = "NSE"
 _EXCHANGE_TO_MARKET["BSE"] = "BSE"
+# Yahoo exchange codes for UAE markets. Yahoo's reporting on the Emirati
+# venues is patchier than for US/India — we accept anything that looks
+# like the Dubai or Abu Dhabi exchange.
+_EXCHANGE_TO_MARKET["DFM"] = "DFM"
+_EXCHANGE_TO_MARKET["DUB"] = "DFM"
+_EXCHANGE_TO_MARKET["ADX"] = "ADX"
+_EXCHANGE_TO_MARKET["AUH"] = "ADX"
 
 _ALLOWED_QUOTE_TYPES = {"EQUITY", "ETF"}
 

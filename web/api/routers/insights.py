@@ -41,7 +41,7 @@ _CONVICTION_ABS_SCORE = 6.0
 # pct-of-total exposure. NOT used for any P&L calculation — purely for
 # the "% of portfolio" chart on the risk panel. Honest fallback if FX
 # isn't available.
-_ROUGH_FX_TO_INR = {"INR": 1.0, "USD": 83.0}
+_ROUGH_FX_TO_INR = {"INR": 1.0, "USD": 83.0, "AED": 22.6}
 
 
 @router.get("", response_model=InsightsOut)
