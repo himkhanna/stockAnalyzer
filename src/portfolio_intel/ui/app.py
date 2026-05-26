@@ -428,8 +428,10 @@ with st.sidebar:
     )
 
     st.divider()
-    if st.button("🔄 Refresh data cache", use_container_width=True):
+    if st.button("🔄 Refresh data", use_container_width=True,
+                 help="Re-fetch quotes & recompute signals. Filters/sort apply instantly without refetching."):
         _quick_card.clear()
+        st.session_state.pop("rows_cache", None)
         st.rerun()
 
 
@@ -452,9 +454,24 @@ with tab_dash:
             "or add a holding manually, or jump to **🔍 Lookup** to analyse any ticker."
         )
     else:
-        # Build all rows once (cached at the _quick_card layer).
-        with st.spinner(f"loading {len(items)} holding(s)..."):
-            rows = _build_rows(items, period)
+        # Build rows ONCE per (portfolio composition, period) and stash in
+        # session_state so changing filters / sort doesn't refetch anything.
+        # Refresh button clears this so the next render rebuilds.
+        fingerprint = (
+            db_path, period,
+            tuple(sorted((it.symbol, it.market.code) for it in items)),
+        )
+        cached = st.session_state.get("rows_cache")
+        if cached and cached.get("fp") == fingerprint:
+            rows = cached["rows"]
+            loaded_at = cached.get("loaded_at", "")
+        else:
+            with st.spinner(f"loading {len(items)} holding(s)..."):
+                rows = _build_rows(items, period)
+            loaded_at = date_.today().isoformat()
+            st.session_state["rows_cache"] = {
+                "fp": fingerprint, "rows": rows, "loaded_at": loaded_at,
+            }
 
         _render_summary(rows)
         st.divider()
@@ -462,7 +479,10 @@ with tab_dash:
         # Top action bar.
         bar = st.columns([3, 1, 1])
         with bar[0]:
-            st.caption("Sell / Strong Sell get the loudest colour — those are the ones to act on.")
+            st.caption(
+                f"Data loaded {loaded_at} · filters/sort apply instantly · "
+                f"use the sidebar **Refresh data** button to refetch."
+            )
         with bar[2]:
             run_full = st.button(
                 "🤖 Generate today's batch (LLM)",
@@ -487,6 +507,7 @@ with tab_dash:
                 )
             st.success("Batch complete.")
             _quick_card.clear()
+            st.session_state.pop("rows_cache", None)
             st.rerun()
 
         # Apply filters.
