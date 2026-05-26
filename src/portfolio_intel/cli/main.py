@@ -4,6 +4,7 @@ Commands:
   pintel lookup  <ticker> [--market US|NSE|BSE]
   pintel analyze <ticker> [--market ...] [--period 1y] [--interval 1d]
   pintel digest  <ticker> [--market ...] [--period 1y] [--no-llm] [--model NAME]
+  pintel batch   [TICKER...] [--no-llm] [--model NAME] [--force] [--out-dir DIR]
   pintel list
   pintel add     <ticker> --shares N --cost X [--market ...] [--date YYYY-MM-DD]
   pintel remove  <ticker> [--market ...]
@@ -237,6 +238,70 @@ def cmd_digest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_batch(args: argparse.Namespace) -> int:
+    from pathlib import Path
+    from ..batch import BatchItem, items_from_portfolio, run_batch
+
+    store = PortfolioStore(args.db)
+    source = YFinanceSource()
+
+    if args.tickers:
+        items: list[BatchItem] = []
+        for t in args.tickers:
+            symbol, market = _resolve_ticker(t, None)
+            holding = store.get(symbol, market.code)
+            items.append(BatchItem(symbol=symbol, market=market, holding=holding))
+    else:
+        items = items_from_portfolio(store)
+
+    if not items:
+        print(
+            "no tickers to process — give them as arguments "
+            "(`pintel batch AAPL RELIANCE.NS`) or `pintel import` a portfolio first",
+            file=sys.stderr,
+        )
+        return 2
+
+    out_dir = Path(args.out_dir)
+    print(f"running batch over {len(items)} ticker(s) -> {out_dir}/{date.today().isoformat()}/")
+    print(f"  llm: {'off' if args.no_llm else args.model}  ·  force: {args.force}\n")
+
+    def _progress(i: int, total: int, outcome) -> None:
+        item = outcome.item
+        prefix = f"[{i}/{total}] {item.symbol}.{item.market.code}"
+        if outcome.status == "skipped":
+            print(f"{prefix}  skipped (exists; use --force to regenerate)")
+        elif outcome.status == "failed":
+            print(f"{prefix}  FAILED in {outcome.duration_s:.1f}s — {outcome.error}")
+        else:
+            note = outcome.synthesis_first_line or ""
+            if len(note) > 60:
+                note = note[:57] + "..."
+            print(f"{prefix}  done in {outcome.duration_s:.1f}s  ·  {note}")
+
+    outcomes = run_batch(
+        items,
+        data_source=source,
+        out_dir=out_dir,
+        period=args.period,
+        run_llm=not args.no_llm,
+        model=args.model,
+        force=args.force,
+        on_progress=_progress,
+    )
+
+    ok = sum(o.status == "ok" for o in outcomes)
+    skipped = sum(o.status == "skipped" for o in outcomes)
+    failed = sum(o.status == "failed" for o in outcomes)
+    total_s = sum(o.duration_s for o in outcomes)
+    print(
+        f"\ndone: {ok} ok · {skipped} skipped · {failed} failed  "
+        f"({total_s:.1f}s total)"
+    )
+    print(f"index: {out_dir}/{date.today().isoformat()}/index.md")
+    return 0 if failed == 0 else 1
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     store = PortfolioStore(args.db)
     holdings = store.all()
@@ -390,6 +455,26 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Ollama model name (default: {DEFAULT_MODEL} or $OLLAMA_MODEL).",
     )
     sp.set_defaults(func=cmd_digest)
+
+    sp = sub.add_parser(
+        "batch",
+        help="Run digest over many tickers and write each to a markdown file.",
+    )
+    sp.add_argument(
+        "tickers",
+        nargs="*",
+        help="Tickers to process. If omitted, runs over every portfolio holding.",
+    )
+    sp.add_argument("--period", default="1y")
+    sp.add_argument("--no-llm", action="store_true",
+                    help="Skip the LLM synthesis; write data + signals only.")
+    sp.add_argument("--model", default=DEFAULT_MODEL,
+                    help=f"Ollama model name (default: {DEFAULT_MODEL} or $OLLAMA_MODEL).")
+    sp.add_argument("--force", action="store_true",
+                    help="Regenerate even if today's file already exists.")
+    sp.add_argument("--out-dir", default="digests",
+                    help="Output directory (default: digests/).")
+    sp.set_defaults(func=cmd_batch)
 
     sp = sub.add_parser("list", help="List portfolio holdings with current prices and P&L.")
     sp.set_defaults(func=cmd_list)
