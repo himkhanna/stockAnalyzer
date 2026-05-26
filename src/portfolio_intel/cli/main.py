@@ -235,9 +235,6 @@ def cmd_digest(args: argparse.Namespace) -> int:
         rate = (tok / secs) if secs else 0
         print(f"  [{tok} tokens in {secs:.1f}s, {rate:.1f} tok/s]")
     return 0
-    else:
-        print("(synthesis skipped: --no-llm)")
-    return 0
 
 
 def cmd_list(args: argparse.Namespace) -> int:
