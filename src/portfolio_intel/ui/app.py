@@ -14,6 +14,7 @@ from __future__ import annotations
 import sys
 from datetime import date as date_
 from pathlib import Path
+from typing import Optional
 
 try:
     from dotenv import load_dotenv
@@ -380,20 +381,48 @@ with tab_portfolio:
 
     st.divider()
     st.subheader("Import CSV")
-    st.caption("Columns: ticker, market, shares, cost_basis, date. See `examples/portfolio.example.csv`.")
+    st.caption(
+        "Auto-detects ICICI Direct's PortFolioEqtSummary export (uses ISIN to "
+        "resolve NSE tickers) **or** the canonical "
+        "`ticker, market, shares, cost_basis, date` format. See "
+        "`examples/portfolio.example.csv`."
+    )
     up = st.file_uploader("portfolio.csv", type=["csv"])
     replace = st.checkbox("Replace existing holdings", value=False)
     if up is not None and st.button("Import"):
         tmp = Path(".upload.csv")
         tmp.write_bytes(up.getvalue())
+        progress = st.progress(0.0, text="resolving tickers...")
+        last_msg = st.empty()
+
+        def _on_resolve(i: int, total: int, key: str, resolved: Optional[str]) -> None:
+            progress.progress(i / total, text=f"resolving {i}/{total}: {key}")
+            last_msg.caption(f"{key} -> {resolved or '(unresolved)'}")
+
         try:
-            result = import_csv_file(tmp)
+            result = import_csv_file(tmp, on_resolve=_on_resolve)
         finally:
             tmp.unlink(missing_ok=True)
+            progress.empty()
+            last_msg.empty()
+
         if result.errors:
-            st.error(f"{len(result.errors)} row(s) had errors:")
-            for err in result.errors:
-                st.write(f"  line {err.row_number}: {err.reason}")
+            st.warning(f"{len(result.errors)} row(s) had problems:")
+            rows = [
+                {
+                    "reason": err.reason,
+                    "isin": err.raw.get("isin") if isinstance(err.raw, dict) else "",
+                    "name": err.raw.get("name") if isinstance(err.raw, dict) else "",
+                    "broker_symbol": err.raw.get("broker_symbol") if isinstance(err.raw, dict) else "",
+                }
+                for err in result.errors
+            ]
+            st.dataframe(rows, use_container_width=True)
+            st.caption(
+                "To fix unresolved rows, create `.ticker_overrides.json` in the "
+                "project root with `{\"ISIN\": \"NSE_SYMBOL\"}` entries and "
+                "re-import."
+            )
         if result.holdings:
             if replace:
                 for h in store.all():

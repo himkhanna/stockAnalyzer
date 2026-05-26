@@ -514,8 +514,12 @@ def cmd_remove(args: argparse.Namespace) -> int:
 
 
 def cmd_import(args: argparse.Namespace) -> int:
+    def _progress(i: int, total: int, key: str, resolved: Optional[str]) -> None:
+        suffix = f"-> {resolved}" if resolved else "-> (unresolved)"
+        print(f"  [{i}/{total}] {key:<35.35} {suffix}")
+
     try:
-        result = import_csv_file(args.csv_path)
+        result = import_csv_file(args.csv_path, on_resolve=_progress)
     except (FileNotFoundError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

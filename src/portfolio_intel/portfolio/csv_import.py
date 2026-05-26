@@ -23,7 +23,7 @@ import csv
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable, Optional
 
 from ..markets import Market, parse_ticker
 from .models import Holding
@@ -63,13 +63,44 @@ def parse_portfolio_csv(rows: Iterable[dict], *, today: date | None = None) -> I
     return ImportResult(holdings=holdings, errors=errors)
 
 
-def import_csv_file(path: str | Path, *, today: date | None = None) -> ImportResult:
+def import_csv_file(
+    path: str | Path,
+    *,
+    today: date | None = None,
+    on_resolve: "Callable[[int, int, str, str | None], None] | None" = None,
+) -> ImportResult:
+    """Read a CSV and return an ImportResult.
+
+    Auto-detects broker formats (ICICI Direct currently). For broker
+    formats, every row's ticker is resolved via ISIN/name lookup before
+    being handed to the canonical parser. `on_resolve(i, total, key,
+    resolved)` lets the CLI / UI render a progress bar during that step.
+    """
+    from .brokers import detect_broker, translate
+    from .ticker_resolver import TickerResolver
+
     path = Path(path)
     with path.open("r", newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
             raise ValueError(f"{path}: CSV has no header row")
-        normalized = [_normalize_keys(r) for r in reader]
+        raw_rows = list(reader)
+
+    broker = detect_broker(list(reader.fieldnames))
+    if broker is not None:
+        translation = translate(
+            broker, raw_rows, resolver=TickerResolver(), on_progress=on_resolve,
+        )
+        result = parse_portfolio_csv(translation.canonical_rows, today=today)
+        # Append broker-side unresolved rows as ImportResult errors so the
+        # caller surfaces them in the same UI/CLI path.
+        for u in translation.unresolved:
+            result.errors.append(
+                RowError(row_number=-1, raw=u, reason=u.get("reason", "unresolved"))
+            )
+        return result
+
+    normalized = [_normalize_keys(r) for r in raw_rows]
     missing = REQUIRED_COLUMNS - {_canon(c) for c in reader.fieldnames}
     if missing:
         raise ValueError(
