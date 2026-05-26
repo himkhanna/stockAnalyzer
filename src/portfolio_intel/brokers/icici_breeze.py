@@ -99,37 +99,70 @@ class BreezeClient:
             raise BreezeError(f"Breeze rejected the session token: {e}") from e
 
     def get_holdings(self) -> list[BrokerHolding]:
-        try:
-            resp = self._sdk.get_portfolio_holdings()
-        except Exception as e:
-            msg = str(e).lower()
-            if "session" in msg or "auth" in msg or "expired" in msg:
-                raise BreezeSessionExpired(str(e)) from e
-            raise BreezeError(str(e)) from e
-
-        if not isinstance(resp, dict):
-            raise BreezeError(f"unexpected Breeze response shape: {type(resp).__name__}")
-
-        # Breeze surfaces explicit errors in the Error field.
-        err = resp.get("Error") or resp.get("error")
-        if err:
-            msg = str(err).lower()
-            if "session" in msg or "auth" in msg:
-                raise BreezeSessionExpired(str(err))
-            raise BreezeError(str(err))
-
-        records = resp.get("Success") or resp.get("success") or []
-        if not isinstance(records, list):
-            raise BreezeError("Breeze 'Success' field was not a list")
-
+        """Pull holdings across all Indian equity exchanges Breeze covers."""
         holdings: list[BrokerHolding] = []
-        for r in records:
-            if not isinstance(r, dict):
-                continue
+        seen: set[tuple[str, str]] = set()  # de-dupe across exchanges by (isin, stock_code)
+        last_error: Optional[Exception] = None
+
+        for exchange in ("NSE", "BSE"):
             try:
-                holdings.append(_parse_holding(r))
-            except (ValueError, TypeError):
-                continue  # skip malformed rows; never break the sync
+                resp = self._sdk.get_portfolio_holdings(exchange_code=exchange)
+            except Exception as e:
+                msg = str(e).lower()
+                if "session" in msg or "auth" in msg or "expired" in msg:
+                    raise BreezeSessionExpired(str(e)) from e
+                last_error = e
+                continue
+
+            if not isinstance(resp, dict):
+                last_error = BreezeError(
+                    f"unexpected Breeze response shape: {type(resp).__name__}"
+                )
+                continue
+
+            err = resp.get("Error") or resp.get("error")
+            if err:
+                msg = str(err).lower()
+                if "session" in msg or "auth" in msg:
+                    raise BreezeSessionExpired(str(err))
+                # "no holdings" is reported as an Error string for some accounts;
+                # don't fail the whole sync just because one exchange is empty.
+                if "no" in msg and ("data" in msg or "holding" in msg or "record" in msg):
+                    continue
+                last_error = BreezeError(str(err))
+                continue
+
+            records = resp.get("Success") or resp.get("success") or []
+            if not isinstance(records, list):
+                continue
+
+            for r in records:
+                if not isinstance(r, dict):
+                    continue
+                try:
+                    h = _parse_holding(r)
+                except (ValueError, TypeError):
+                    continue
+                if not h.exchange_code:
+                    h = BrokerHolding(
+                        stock_code=h.stock_code,
+                        exchange_code=exchange,
+                        quantity=h.quantity,
+                        average_price=h.average_price,
+                        current_price=h.current_price,
+                        isin=h.isin,
+                        company_name=h.company_name,
+                        raw=h.raw,
+                    )
+                key = (h.isin or h.stock_code, h.exchange_code)
+                if key in seen:
+                    continue
+                seen.add(key)
+                holdings.append(h)
+
+        # If we got nothing AND every exchange errored, surface the last error.
+        if not holdings and last_error is not None:
+            raise BreezeError(str(last_error))
         return holdings
 
 
