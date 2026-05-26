@@ -1,14 +1,15 @@
 """CLI.
 
 Commands:
-  pintel lookup  <ticker> [--market US|NSE|BSE]
-  pintel analyze <ticker> [--market ...] [--period 1y] [--interval 1d]
-  pintel digest  <ticker> [--market ...] [--period 1y] [--no-llm] [--model NAME]
-  pintel batch   [TICKER...] [--no-llm] [--model NAME] [--force] [--out-dir DIR]
+  pintel lookup   <ticker> [--market US|NSE|BSE]
+  pintel analyze  <ticker> [--market ...] [--period 1y] [--interval 1d]
+  pintel digest   <ticker> [--market ...] [--period 1y] [--no-llm] [--model NAME] [--backtest]
+  pintel backtest <ticker> [--market ...] [--period 5y] [--cost 0.1]
+  pintel batch    [TICKER...] [--no-llm] [--model NAME] [--force] [--out-dir DIR] [--backtest]
   pintel list
-  pintel add     <ticker> --shares N --cost X [--market ...] [--date YYYY-MM-DD]
-  pintel remove  <ticker> [--market ...]
-  pintel import  <csv>  [--replace] [--dry-run] [--skip-errors]
+  pintel add      <ticker> --shares N --cost X [--market ...] [--date YYYY-MM-DD]
+  pintel remove   <ticker> [--market ...]
+  pintel import   <csv>  [--replace] [--dry-run] [--skip-errors]
 """
 from __future__ import annotations
 
@@ -129,6 +130,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 
 def cmd_digest(args: argparse.Namespace) -> int:
+    from ..backtest import run_backtest as run_bt
     from ..data.finnhub_news import FinnhubNewsSource
     from ..llm.ollama import OllamaError, generate
     from ..llm.prompts import SYSTEM_PROMPT, build_user_prompt
@@ -204,6 +206,28 @@ def cmd_digest(args: argparse.Namespace) -> int:
         )
         print(f"              {setup.note}")
 
+    backtest = None
+    if args.backtest:
+        try:
+            backtest = run_bt(df, transaction_cost_pct=args.cost)
+        except ValueError as e:
+            print(f"  Backtest    (skipped: {e})")
+        else:
+            edge = backtest.edge_pct
+            tag = "beat hold" if backtest.beat_hold else "underperformed hold"
+            wr = f"{backtest.win_rate_pct:.0f}%" if backtest.win_rate_pct is not None else "n/a"
+            print(
+                f"  Backtest    rule {backtest.strategy_return_pct:+.1f}% vs hold "
+                f"{backtest.buy_and_hold_return_pct:+.1f}% (edge {edge:+.1f}%, {tag})"
+            )
+            print(
+                f"              {backtest.n_trades} trades, win rate {wr}, "
+                f"max DD {backtest.max_drawdown_pct:.1f}%, in market {backtest.in_market_pct:.0f}% of bars"
+            )
+            print(
+                f"              honesty: technicals-only — historical sentiment not included"
+            )
+
     if holding is not None and quote is not None:
         cost_total = holding.cost_basis * holding.shares
         mv = quote.price * holding.shares
@@ -242,6 +266,7 @@ def cmd_digest(args: argparse.Namespace) -> int:
         score=score,
         rules=rules,
         setup=setup,
+        backtest=backtest,
         position_note=position_note,
     )
     print(f"Synthesis ({args.model}):")
@@ -269,6 +294,50 @@ def cmd_digest(args: argparse.Namespace) -> int:
         tok = resp.eval_count or 0
         rate = (tok / secs) if secs else 0
         print(f"  [{tok} tokens in {secs:.1f}s, {rate:.1f} tok/s]")
+    return 0
+
+
+def cmd_backtest(args: argparse.Namespace) -> int:
+    from ..backtest import run_backtest as run_bt
+
+    symbol, market = _resolve_ticker(args.ticker, args.market)
+    source = YFinanceSource()
+    try:
+        df = source.get_history(symbol, market, period=args.period)
+    except DataSourceError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    try:
+        bt = run_bt(
+            df,
+            enter_threshold=args.enter,
+            exit_threshold=args.exit,
+            transaction_cost_pct=args.cost,
+        )
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    sym = market.currency_symbol
+    edge = bt.edge_pct
+    tag = "beat hold" if bt.beat_hold else "underperformed hold"
+    wr = f"{bt.win_rate_pct:.0f}%" if bt.win_rate_pct is not None else "n/a"
+    hold = f"{bt.avg_holding_days:.1f}d" if bt.avg_holding_days is not None else "n/a"
+
+    print(f"\n=== {symbol}.{market.code} backtest ===")
+    print(f"  Period      {bt.start_date} → {bt.end_date}  ({bt.bars} bars)")
+    print(f"  Strategy    {bt.strategy_return_pct:+.2f}%")
+    print(f"  Buy & hold  {bt.buy_and_hold_return_pct:+.2f}%")
+    print(f"  Edge        {edge:+.2f}%  ({tag})")
+    print(f"  Trades      {bt.n_trades}, win rate {wr}, avg hold {hold}")
+    print(f"  Max DD      {bt.max_drawdown_pct:.2f}%")
+    print(f"  In market   {bt.in_market_pct:.0f}% of bars  ·  costs {bt.transaction_cost_pct}%/side")
+    print(f"  Honesty     technicals-only — historical sentiment NOT included")
+
+    if args.show_trades and bt.trades:
+        print(f"\n  Trades:")
+        for t in bt.trades:
+            print(f"    {t.entry_date} -> {t.exit_date}  {sym}{t.entry_price:,.2f} -> {sym}{t.exit_price:,.2f}  ({t.return_pct:+.2f}%)")
     return 0
 
 
@@ -321,6 +390,7 @@ def cmd_batch(args: argparse.Namespace) -> int:
         run_llm=not args.no_llm,
         model=args.model,
         force=args.force,
+        run_backtest_too=args.backtest,
         on_progress=_progress,
     )
 
@@ -488,7 +558,31 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MODEL,
         help=f"Ollama model name (default: {DEFAULT_MODEL} or $OLLAMA_MODEL).",
     )
+    sp.add_argument(
+        "--backtest", action="store_true",
+        help="Also run a historical backtest of the score-driven strategy "
+             "and include the track record in the output / prompt.",
+    )
+    sp.add_argument("--cost", type=float, default=0.1,
+                    help="Per-side transaction cost (%%) for the backtest. Default 0.1.")
     sp.set_defaults(func=cmd_digest)
+
+    sp = sub.add_parser(
+        "backtest",
+        help="Backtest the score-driven strategy on a single ticker.",
+    )
+    sp.add_argument("ticker")
+    sp.add_argument("--market", choices=[m.code for m in Market])
+    sp.add_argument("--period", default="5y", help="History window (default 5y).")
+    sp.add_argument("--enter", type=float, default=2.0,
+                    help="Score threshold to enter long (default 2.0).")
+    sp.add_argument("--exit", type=float, default=0.0,
+                    help="Score threshold to exit (default 0.0).")
+    sp.add_argument("--cost", type=float, default=0.1,
+                    help="Per-side transaction cost (%%). Default 0.1.")
+    sp.add_argument("--show-trades", action="store_true",
+                    help="Print each individual trade.")
+    sp.set_defaults(func=cmd_backtest)
 
     sp = sub.add_parser(
         "batch",
@@ -508,6 +602,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Regenerate even if today's file already exists.")
     sp.add_argument("--out-dir", default="digests",
                     help="Output directory (default: digests/).")
+    sp.add_argument("--backtest", action="store_true",
+                    help="Include a historical backtest section per ticker.")
     sp.set_defaults(func=cmd_batch)
 
     sp = sub.add_parser("list", help="List portfolio holdings with current prices and P&L.")

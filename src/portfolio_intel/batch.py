@@ -78,6 +78,7 @@ def run_batch(
     run_llm: bool = True,
     model: str = DEFAULT_MODEL,
     force: bool = False,
+    run_backtest_too: bool = False,
     on_progress: Optional[Callable[[int, int, BatchOutcome], None]] = None,
 ) -> list[BatchOutcome]:
     """Run digest generation for each item, writing markdown to disk.
@@ -125,6 +126,7 @@ def run_batch(
                 model=model,
                 holding=item.holding,
                 currency_bucket_total=bucket_total,
+                run_backtest_too=run_backtest_too,
             )
             md = render_digest_md(digest, holding=item.holding)
             file_path.write_text(md, encoding="utf-8")

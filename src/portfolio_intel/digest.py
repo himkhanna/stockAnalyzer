@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from .backtest import BacktestResult, run_backtest
 from .data.base import DataSource, DataSourceError
 from .data.finnhub_news import FinnhubNewsSource
 from .data.models import NewsItem, Quote
@@ -51,6 +52,7 @@ class Digest:
     rules: list[RuleHit] = field(default_factory=list)
     setup: Optional[TradeSetup] = None
     position: Optional[PositionContext] = None
+    backtest: Optional[BacktestResult] = None  # populated when run_backtest=True
     synthesis: Optional[str] = None
     synthesis_error: Optional[str] = None
     model_used: Optional[str] = None
@@ -70,6 +72,8 @@ def build_digest(
     currency_bucket_total: Optional[float] = None,
     weights: Weights = DEFAULT_WEIGHTS,
     on_token: Optional[Callable[[str], None]] = None,
+    run_backtest_too: bool = False,
+    backtest_transaction_cost_pct: float = 0.1,
 ) -> Digest:
     df = data_source.get_history(symbol, market, period=period, interval=interval)
     snap = compute_snapshot(df)
@@ -97,6 +101,17 @@ def build_digest(
             weights=weights,
         )
 
+    backtest: Optional[BacktestResult] = None
+    if run_backtest_too:
+        try:
+            backtest = run_backtest(
+                df,
+                weights=weights,
+                transaction_cost_pct=backtest_transaction_cost_pct,
+            )
+        except ValueError:
+            backtest = None  # not enough history; honestly omit
+
     synthesis: Optional[str] = None
     synthesis_error: Optional[str] = None
     model_used: Optional[str] = None
@@ -113,6 +128,7 @@ def build_digest(
             score=score,
             rules=rules,
             setup=setup,
+            backtest=backtest,
             position_note=position_note,
         )
         try:
@@ -133,6 +149,7 @@ def build_digest(
         rules=rules,
         setup=setup,
         position=position,
+        backtest=backtest,
         synthesis=synthesis,
         synthesis_error=synthesis_error,
         model_used=model_used,

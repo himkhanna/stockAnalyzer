@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from ..backtest import BacktestResult
 from ..data.models import NewsItem
 from ..news.sentiment import SentimentSummary
 from ..scoring import RuleHit, Score, TradeSetup
@@ -58,6 +59,7 @@ def build_user_prompt(
     score: Optional[Score] = None,
     rules: Optional[list[RuleHit]] = None,
     setup: Optional[TradeSetup] = None,
+    backtest: Optional[BacktestResult] = None,
     position_note: Optional[str] = None,
 ) -> str:
     sym = currency_symbol
@@ -125,6 +127,38 @@ def build_user_prompt(
                 + (f" / RR {setup.risk_reward:.1f}:1" if setup.risk_reward else "")
             )
         lines.append(f"  Note: {setup.note}")
+
+    if backtest is not None:
+        lines.append("")
+        sentiment_caveat = (
+            "technicals-only — historical news/sentiment not used"
+            if not backtest.sentiment_used else ""
+        )
+        edge = backtest.edge_pct
+        winrate = f"{backtest.win_rate_pct:.0f}%" if backtest.win_rate_pct is not None else "n/a"
+        lines.append(
+            f"Backtest ({backtest.start_date} to {backtest.end_date}, {backtest.bars} bars, "
+            f"{sentiment_caveat}):"
+        )
+        lines.append(
+            f"  - Strategy: {backtest.strategy_return_pct:+.1f}%  vs  "
+            f"buy-and-hold: {backtest.buy_and_hold_return_pct:+.1f}%  "
+            f"(edge {edge:+.1f}%)"
+        )
+        lines.append(
+            f"  - Trades: {backtest.n_trades}, win rate {winrate}, "
+            f"max drawdown {backtest.max_drawdown_pct:.1f}%, "
+            f"in market {backtest.in_market_pct:.0f}% of bars"
+        )
+        lines.append(
+            f"  - Costs: {backtest.transaction_cost_pct}% per side; "
+            f"enter at score >= {backtest.score_threshold_enter}, "
+            f"exit at score <= {backtest.score_threshold_exit}"
+        )
+        lines.append(
+            "  Note: this is the technical-rule track record only; live "
+            "synthesis also weighs news/sentiment which the backtest cannot."
+        )
 
     if position_note:
         lines.append("")

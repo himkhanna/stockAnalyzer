@@ -144,6 +144,26 @@ def render_digest_md(digest: Digest, *, holding: Holding | None = None, generate
             out.append(f"- _{pos.suggestion}_")
         out.append("")
 
+    # Backtest — the honesty check
+    bt = digest.backtest
+    if bt is not None:
+        out.append("## Backtest (honesty check)")
+        out.append("")
+        out.append(
+            f"_{bt.start_date} → {bt.end_date} · {bt.bars} bars · "
+            f"technicals-only (no historical sentiment)_"
+        )
+        out.append("")
+        edge = bt.edge_pct
+        edge_tag = "✅ beat hold" if bt.beat_hold else "❌ underperformed hold"
+        out.append(f"- **Strategy:** {bt.strategy_return_pct:+.1f}%")
+        out.append(f"- **Buy-and-hold:** {bt.buy_and_hold_return_pct:+.1f}%")
+        out.append(f"- **Edge:** {edge:+.1f}%  ({edge_tag})")
+        wr = f"{bt.win_rate_pct:.0f}%" if bt.win_rate_pct is not None else "n/a"
+        out.append(f"- **Trades:** {bt.n_trades} · win rate {wr} · max drawdown {bt.max_drawdown_pct:.1f}%")
+        out.append(f"- **In market:** {bt.in_market_pct:.0f}% of bars · costs {bt.transaction_cost_pct}%/side")
+        out.append("")
+
     # Synthesis
     out.append("## Synthesis")
     out.append("")
