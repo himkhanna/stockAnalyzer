@@ -266,12 +266,13 @@ function SessionForm({
 
 function SyncBlock({ onApplied }: { onApplied: () => void }) {
   const [preview, setPreview] = useState<SyncPreview | null>(null);
+  const [replaceIndia, setReplaceIndia] = useState(false);
   const previewM = useMutation({
     mutationFn: () => api.iciciSyncPreview(),
     onSuccess: setPreview,
   });
   const applyM = useMutation({
-    mutationFn: () => api.iciciSyncApply(),
+    mutationFn: () => api.iciciSyncApply(replaceIndia),
     onSuccess: () => {
       setPreview(null);
       onApplied();
@@ -368,22 +369,43 @@ function SyncBlock({ onApplied }: { onApplied: () => void }) {
               <code>.ticker_overrides.json</code> in the project root.
             </div>
           )}
-          <button
-            className="btn-primary"
-            onClick={() => applyM.mutate()}
-            disabled={
-              applyM.isPending ||
-              preview.add_count + preview.update_count === 0
-            }
-          >
-            {applyM.isPending
-              ? "Applying…"
-              : `Apply ${preview.add_count + preview.update_count} change${
-                  preview.add_count + preview.update_count === 1 ? "" : "s"
-                }`}
-          </button>
+          <div className="flex items-center gap-4 flex-wrap">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={replaceIndia}
+                onChange={(e) => setReplaceIndia(e.target.checked)}
+              />
+              Replace existing Indian holdings (NSE + BSE)
+            </label>
+            <button
+              className="btn-primary"
+              onClick={() => applyM.mutate()}
+              disabled={
+                applyM.isPending ||
+                (!replaceIndia && preview.add_count + preview.update_count === 0)
+              }
+            >
+              {applyM.isPending
+                ? "Applying…"
+                : replaceIndia
+                ? `Replace NSE+BSE with ${preview.rows.filter((r) => r.resolved_ticker).length} synced`
+                : `Apply ${preview.add_count + preview.update_count} change${
+                    preview.add_count + preview.update_count === 1 ? "" : "s"
+                  }`}
+            </button>
+          </div>
+          {replaceIndia && (
+            <div className="text-xs text-amber-600 dark:text-amber-400">
+              Replace mode wipes every NSE and BSE holding in the DB and
+              re-inserts only what the broker returned (skipping unresolved
+              rows). US and UAE holdings are not touched.
+            </div>
+          )}
           {applyM.data && (
             <div className="text-sm text-bull-500">
+              {applyM.data.removed > 0 &&
+                `Removed ${applyM.data.removed} existing · `}
               Synced {applyM.data.upserted} holding
               {applyM.data.upserted === 1 ? "" : "s"}.
             </div>

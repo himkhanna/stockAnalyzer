@@ -174,8 +174,11 @@ export const api = {
     request<void>("/brokers/icici/disconnect", { method: "POST" }),
   iciciSyncPreview: () =>
     request<SyncPreview>("/brokers/icici/sync/preview", { method: "POST" }),
-  iciciSyncApply: () =>
-    request<SyncApplyResult>("/brokers/icici/sync/apply", { method: "POST" }),
+  iciciSyncApply: (replaceIndia = false) =>
+    request<SyncApplyResult>(
+      `/brokers/icici/sync/apply?replace_india=${replaceIndia ? "true" : "false"}`,
+      { method: "POST" },
+    ),
 
   listWatchlist: () => request<WatchlistItem[]>("/watchlist"),
   addWatchlist: (item: WatchlistItemIn) =>

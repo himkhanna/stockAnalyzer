@@ -166,17 +166,32 @@ class BreezeClient:
         return holdings
 
 
+_ISIN_KEYS = ("isin", "ISIN", "isin_code", "stock_ISIN", "stock_isin", "isin_no")
+_NAME_KEYS = ("company_name", "stock_name", "name", "company")
+_QTY_KEYS = ("quantity", "Qty", "qty", "holding_qty")
+_AVG_KEYS = ("average_price", "avg_price", "average_cost", "avgcost", "cost_basis")
+_CUR_KEYS = ("current_market_price", "ltp", "last_traded_price", "current_price", "market_price")
+
+
+def _first(r: dict, keys: tuple[str, ...], default=None):
+    for k in keys:
+        v = r.get(k)
+        if v not in (None, ""):
+            return v
+    return default
+
+
 def _parse_holding(r: dict) -> BrokerHolding:
-    qty_raw = r.get("quantity") or r.get("Qty") or 0
-    avg_raw = r.get("average_price") or r.get("avg_price") or 0
-    cur_raw = r.get("current_market_price") or r.get("ltp")
+    qty_raw = _first(r, _QTY_KEYS, 0)
+    avg_raw = _first(r, _AVG_KEYS, 0)
+    cur_raw = _first(r, _CUR_KEYS)
     return BrokerHolding(
         stock_code=str(r.get("stock_code") or r.get("symbol") or "").strip(),
         exchange_code=str(r.get("exchange_code") or r.get("exchange") or "NSE").strip().upper(),
         quantity=float(qty_raw or 0),
         average_price=float(avg_raw or 0),
         current_price=float(cur_raw) if cur_raw not in (None, "") else None,
-        isin=str(r.get("isin") or r.get("isin_code") or "").strip(),
-        company_name=(r.get("company_name") or r.get("stock_name") or None),
+        isin=str(_first(r, _ISIN_KEYS, "") or "").strip(),
+        company_name=_first(r, _NAME_KEYS),
         raw=r,
     )

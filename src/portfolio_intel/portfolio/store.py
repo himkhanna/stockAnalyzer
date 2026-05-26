@@ -128,6 +128,18 @@ class PortfolioStore:
             )
             return cur.rowcount > 0
 
+    def remove_by_markets(self, market_codes: Iterable[str]) -> int:
+        codes = tuple(m.upper() for m in market_codes)
+        if not codes:
+            return 0
+        placeholders = ",".join("?" for _ in codes)
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"DELETE FROM holdings WHERE market IN ({placeholders})",
+                codes,
+            )
+            return cur.rowcount
+
     def get(self, ticker: str, market_code: str) -> Optional[Holding]:
         with self._connect() as conn:
             row = conn.execute(

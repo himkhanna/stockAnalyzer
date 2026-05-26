@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import date as date_, datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from portfolio_intel.brokers import (
@@ -89,6 +89,7 @@ class SyncPreview(BaseModel):
 class SyncApplyResult(BaseModel):
     upserted: int
     unresolved: int
+    removed: int = 0
 
 
 def _is_session_live(cfg: dict) -> bool:
@@ -159,14 +160,28 @@ def icici_sync_preview() -> SyncPreview:
 
 
 @router.post("/icici/sync/apply", response_model=SyncApplyResult)
-def icici_sync_apply() -> SyncApplyResult:
+def icici_sync_apply(
+    replace_india: bool = Query(
+        False,
+        description="If true, delete every existing NSE/BSE holding before "
+                    "upserting the broker rows. US/UAE holdings are left alone.",
+    ),
+) -> SyncApplyResult:
     holdings = _fetch_holdings()
     preview = _diff_against_store(holdings)
 
     store = get_store()
+    removed = 0
+    if replace_india:
+        removed = store.remove_by_markets(("NSE", "BSE"))
+
     upserted = 0
     for row in preview.rows:
-        if row.action == "unresolved" or row.action == "unchanged":
+        # In replace mode we re-add everything resolvable, even rows that
+        # looked 'unchanged' against the (now-deleted) prior state.
+        if not replace_india and row.action in ("unresolved", "unchanged"):
+            continue
+        if replace_india and row.action == "unresolved":
             continue
         if not row.resolved_ticker or not row.resolved_market:
             continue
@@ -183,7 +198,11 @@ def icici_sync_apply() -> SyncApplyResult:
             date_added=date_.today(),
         ))
         upserted += 1
-    return SyncApplyResult(upserted=upserted, unresolved=preview.unresolved_count)
+    return SyncApplyResult(
+        upserted=upserted,
+        unresolved=preview.unresolved_count,
+        removed=removed,
+    )
 
 
 # --- internals ---
@@ -230,7 +249,7 @@ def _diff_against_store(holdings: list[BrokerHolding]) -> SyncPreview:
         try:
             res = resolver.resolve(isin=h.isin, name=h.company_name or "", fallback=h.stock_code)
             if res is not None:
-                resolved_ticker = res.ticker
+                resolved_ticker = res.bare_symbol
                 source = res.source
         except Exception:
             resolved_ticker = None

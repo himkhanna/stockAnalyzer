@@ -273,6 +273,7 @@ export interface SyncPreview {
 export interface SyncApplyResult {
   upserted: number;
   unresolved: number;
+  removed: number;
 }
 
 export interface Backtest {
