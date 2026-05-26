@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from .routers import backtest as backtest_router
 from .routers import digest as digest_router
 from .routers import holdings as holdings_router
 from .routers import insights as insights_router
@@ -54,6 +55,7 @@ app.include_router(digest_router.router, prefix="/api/digest", tags=["digest"])
 app.include_router(search_router.router, prefix="/api/search", tags=["search"])
 app.include_router(insights_router.router, prefix="/api/insights", tags=["insights"])
 app.include_router(watchlist_router.router, prefix="/api/watchlist", tags=["watchlist"])
+app.include_router(backtest_router.router, prefix="/api/backtest", tags=["backtest"])
 
 
 @app.get("/api/health")

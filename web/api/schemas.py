@@ -116,6 +116,32 @@ class LookupOut(BaseModel):
     markdown: Optional[str] = None  # populated when run_llm=true
 
 
+class BacktestOut(BaseModel):
+    symbol: str
+    market: str
+
+    start_date: str
+    end_date: str
+    bars: int
+
+    strategy_return_pct: float
+    buy_and_hold_return_pct: float
+    edge_pct: float
+    beat_hold: bool
+
+    max_drawdown_pct: float
+    n_trades: int
+    win_rate_pct: Optional[float] = None
+    avg_holding_days: Optional[float] = None
+    in_market_pct: float
+
+    transaction_cost_pct: float
+    score_threshold_enter: float
+    score_threshold_exit: float
+
+    sentiment_used: bool = False  # honest caveat — see backtest/__init__.py
+
+
 # --- Insights page ---
 
 class WatchlistItemIn(BaseModel):

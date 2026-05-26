@@ -36,6 +36,7 @@ def lookup(
             period=period,
             run_llm=run_llm,
             holding=holding,
+            run_backtest_too=True,
         )
     except (DataSourceError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e))

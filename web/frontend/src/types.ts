@@ -192,6 +192,30 @@ export interface RiskPanel {
   biggest_losers: CardRow[];
 }
 
+export interface Backtest {
+  symbol: string;
+  market: string;
+  start_date: string;
+  end_date: string;
+  bars: number;
+
+  strategy_return_pct: number;
+  buy_and_hold_return_pct: number;
+  edge_pct: number;
+  beat_hold: boolean;
+
+  max_drawdown_pct: number;
+  n_trades: number;
+  win_rate_pct: number | null;
+  avg_holding_days: number | null;
+  in_market_pct: number;
+
+  transaction_cost_pct: number;
+  score_threshold_enter: number;
+  score_threshold_exit: number;
+  sentiment_used: boolean;
+}
+
 export interface Insights {
   conviction: ConvictionRow[];
   watchlist: CardRow[];

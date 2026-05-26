@@ -60,6 +60,7 @@ def generate_digest(
             run_llm=True,
             model=model,
             holding=holding,
+            run_backtest_too=True,
         )
     except (DataSourceError, ValueError) as e:
         raise HTTPException(status_code=500, detail=str(e))

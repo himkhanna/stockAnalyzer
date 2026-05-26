@@ -1,4 +1,5 @@
 import type {
+  Backtest,
   CardRow,
   Dashboard,
   DigestPayload,
@@ -126,6 +127,12 @@ export const api = {
   },
 
   getInsights: () => request<Insights>("/insights"),
+
+  runBacktest: (symbol: string, market: string) =>
+    request<Backtest>(
+      `/backtest/${encodeURIComponent(symbol)}/${encodeURIComponent(market)}`,
+      { method: "POST" },
+    ),
 
   listWatchlist: () => request<WatchlistItem[]>("/watchlist"),
   addWatchlist: (item: WatchlistItemIn) =>

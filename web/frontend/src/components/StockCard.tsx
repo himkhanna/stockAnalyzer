@@ -1,11 +1,12 @@
 import clsx from "clsx";
-import { ArrowDown, ArrowUp, FileText, Loader2 } from "lucide-react";
+import { ArrowDown, ArrowUp, FileText, Loader2, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "../api";
 import { SIGNAL_STYLES, fmtCurrency, fmtPct } from "../lib/format";
 import type { CardRow } from "../types";
+import { BacktestModal } from "./BacktestModal";
 import { SignalPill } from "./SignalPill";
 import { Sparkline } from "./Sparkline";
 
@@ -18,6 +19,7 @@ interface Props {
 export function StockCard({ row, attention = false, onOpenDigest }: Props) {
   const qc = useQueryClient();
   const [genErr, setGenErr] = useState<string | null>(null);
+  const [showBacktest, setShowBacktest] = useState(false);
   const generate = useMutation({
     mutationFn: () => api.generateDigest(row.symbol, row.market),
     onSuccess: () => {
@@ -170,9 +172,25 @@ export function StockCard({ row, attention = false, onOpenDigest }: Props) {
             )}
           </button>
         )}
+        <button
+          className="btn-ghost text-xs"
+          onClick={() => setShowBacktest(true)}
+          title="Backtest this signal against history"
+        >
+          <ShieldCheck size={14} />
+          Backtest
+        </button>
       </div>
       {genErr && (
         <div className="text-[11px] text-bear-500">{genErr}</div>
+      )}
+
+      {showBacktest && (
+        <BacktestModal
+          symbol={row.symbol}
+          market={row.market}
+          onClose={() => setShowBacktest(false)}
+        />
       )}
     </div>
   );
