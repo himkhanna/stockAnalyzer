@@ -2,6 +2,7 @@ import clsx from "clsx";
 import { ArrowDown, ArrowUp, Circle } from "lucide-react";
 import type { SignalLabel } from "../types";
 import { SIGNAL_ORDER, SIGNAL_STYLES, fmtCurrency, fmtPct } from "../lib/format";
+import { LastRefreshed } from "./LastRefreshed";
 
 /**
  * Bucket shape used by the home page strip. Differs from the server's
@@ -25,9 +26,10 @@ interface Props {
   signalCounts: Record<string, number>;
   overweight: number;
   isLive: boolean;
+  liveAsOf?: string;
 }
 
-export function KPIStrip({ buckets, signalCounts, overweight, isLive }: Props) {
+export function KPIStrip({ buckets, signalCounts, overweight, isLive, liveAsOf }: Props) {
   return (
     <div className="card px-4 py-2 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
       {buckets.map((b) => {
@@ -105,9 +107,12 @@ export function KPIStrip({ buckets, signalCounts, overweight, isLive }: Props) {
       )}
 
       {isLive && (
-        <div className="ml-auto flex items-center gap-1 text-[11px] text-bull-500">
-          <Circle size={6} fill="currentColor" strokeWidth={0} />
-          <span>live</span>
+        <div className="ml-auto flex items-center gap-2">
+          <div className="flex items-center gap-1 text-[11px] text-bull-500">
+            <Circle size={6} fill="currentColor" strokeWidth={0} />
+            <span>live</span>
+          </div>
+          <LastRefreshed at={liveAsOf} label="quote" compact />
         </div>
       )}
     </div>

@@ -17,15 +17,23 @@ from typing import Optional
 
 from fastapi import APIRouter, Query
 
-from portfolio_intel.discovery import scan_universe, universe_for
+from portfolio_intel.discovery import (
+    classify as classify_asset,
+    scan_universe,
+    summarise as summarise_diversification,
+    universe_for,
+)
 from portfolio_intel.markets import INDICES, Market
 
 from ..schemas import (
+    AssetSliceOut,
     CardRowOut,
     ConvictionRow,
     CurrencyExposure,
     DiscoveryOut,
     DiscoveryRowOut,
+    DiversificationInstrumentOut,
+    DiversificationOut,
     EarningsItem,
     IndexSnapshot,
     InsightsOut,
@@ -446,3 +454,55 @@ def _discovery_save(payload: dict) -> None:
             pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
     except OSError:
         pass
+
+
+# --- Diversification ---
+
+
+@router.get("/diversification", response_model=DiversificationOut)
+def diversification() -> DiversificationOut:
+    """Classify the user's holdings into broad asset buckets and surface
+    well-known instruments per gap. Information only — not advice."""
+    payload = get_dashboard()
+    rows = payload["rows"]
+
+    # Build (symbol, market, market_value, 1) tuples for the summariser.
+    items: list[tuple[str, str, float, int]] = []
+    for r in rows:
+        c = r.card
+        if c.get("error"):
+            continue
+        sym = c.get("symbol")
+        mkt = c.get("market_code")
+        if not sym or not mkt:
+            continue
+        items.append((sym, mkt, float(r.market_value or 0.0), 1))
+
+    div = summarise_diversification(items)
+
+    return DiversificationOut(
+        by_asset=[
+            AssetSliceOut(
+                asset_class=s.asset_class,
+                market_value=round(s.market_value, 2),
+                pct=round(s.pct, 2),
+                n_positions=s.n_positions,
+            )
+            for s in div.by_asset
+        ],
+        total_value=round(div.total_value, 2),
+        gaps=list(div.gaps),
+        suggestions={
+            cls: [
+                DiversificationInstrumentOut(
+                    symbol=i.symbol,
+                    market=i.market,
+                    name=i.name,
+                    asset_class=i.asset_class,
+                    description=i.description,
+                )
+                for i in instruments
+            ]
+            for cls, instruments in div.suggestions.items()
+        },
+    )

@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "../api";
 import { EmptyState } from "../components/EmptyState";
+import { LastRefreshed } from "../components/LastRefreshed";
 import { StockCard } from "../components/StockCard";
 import { TickerCombo } from "../components/TickerCombo";
 import { fmtCurrency, fmtPct, SIGNAL_STYLES } from "../lib/format";
@@ -53,12 +54,14 @@ export function InsightsPage() {
     <div className="space-y-8 pb-12">
       <header className="space-y-1">
         <h1 className="text-xl font-bold">Insights</h1>
-        <p className="text-xs text-zinc-500">
-          Generated {d.generated_at} · {d.note}
+        <p className="text-xs text-zinc-500 flex items-center gap-2 flex-wrap">
+          <LastRefreshed at={d.generated_at} label="generated" />
+          <span>· {d.note}</span>
         </p>
       </header>
 
       <AlertsSection />
+      <DiversificationSection />
       <DiscoverSection />
       <MarketPulse indices={d.indices} />
       <ConvictionBoard rows={d.conviction} />
@@ -67,6 +70,199 @@ export function InsightsPage() {
       <EarningsPanel items={d.upcoming_earnings} />
       <RiskView risk={d.risk} />
     </div>
+  );
+}
+
+// --- Diversification ---
+
+const _CLASS_LABEL: Record<string, string> = {
+  equity: "Equity",
+  etf: "Broad ETF",
+  reit: "REIT (property)",
+  gold: "Gold",
+  debt: "Debt / bonds",
+  cash: "Cash equivalent",
+  other: "Other",
+};
+
+const _CLASS_BG: Record<string, string> = {
+  equity: "bg-blue-500",
+  etf: "bg-indigo-500",
+  reit: "bg-purple-500",
+  gold: "bg-amber-500",
+  debt: "bg-emerald-500",
+  cash: "bg-zinc-400",
+  other: "bg-zinc-300",
+};
+
+function DiversificationSection() {
+  const q = useQuery({
+    queryKey: ["diversification"],
+    queryFn: api.diversification,
+    staleTime: 60 * 1000,
+    retry: false,
+  });
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-baseline gap-2">
+        <h2 className="text-base font-bold">Diversification</h2>
+        <span className="text-xs text-zinc-500">
+          asset-class mix · gaps · common instruments per market
+        </span>
+      </div>
+
+      {q.isLoading ? (
+        <div className="card p-4 text-sm text-zinc-500 flex items-center gap-2">
+          <Loader2 size={14} className="animate-spin" /> Loading…
+        </div>
+      ) : q.error ? (
+        <EmptyState title="Could not classify">{(q.error as Error).message}</EmptyState>
+      ) : q.data ? (
+        <div className="space-y-3">
+          <AllocationBar slices={q.data.by_asset.filter((s) => s.pct > 0)} />
+          {q.data.gaps.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {q.data.gaps.map((gap) => (
+                <GapBlock
+                  key={gap}
+                  asset={gap}
+                  instruments={q.data!.suggestions[gap] ?? []}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="card p-3 text-xs text-zinc-500">
+              No obvious gaps detected — you hold something in every major
+              diversifier bucket (debt, gold, REIT).
+            </div>
+          )}
+          <div className="text-[11px] text-zinc-400">{q.data.note}</div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function AllocationBar({ slices }: { slices: { asset_class: string; pct: number; market_value: number; n_positions: number }[] }) {
+  if (slices.length === 0) {
+    return (
+      <div className="card p-3 text-xs text-zinc-500">
+        No holdings to classify yet.
+      </div>
+    );
+  }
+  return (
+    <div className="card p-4 space-y-3">
+      <div className="text-[11px] text-zinc-500 uppercase tracking-wider">
+        Current allocation
+      </div>
+      <div className="flex h-3 w-full rounded overflow-hidden">
+        {slices.map((s) => (
+          <div
+            key={s.asset_class}
+            className={`${_CLASS_BG[s.asset_class] ?? "bg-zinc-300"}`}
+            style={{ width: `${s.pct}%` }}
+            title={`${_CLASS_LABEL[s.asset_class] ?? s.asset_class}: ${s.pct.toFixed(1)}%`}
+          />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+        {slices.map((s) => (
+          <div key={s.asset_class} className="flex items-center gap-1.5">
+            <span className={`inline-block w-2 h-2 rounded-sm ${_CLASS_BG[s.asset_class] ?? "bg-zinc-300"}`} />
+            <span className="text-zinc-600 dark:text-zinc-400">
+              {_CLASS_LABEL[s.asset_class] ?? s.asset_class}
+            </span>
+            <span className="text-zinc-500 tabular-nums">
+              {s.pct.toFixed(1)}% · {s.n_positions} pos
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function GapBlock({
+  asset,
+  instruments,
+}: {
+  asset: string;
+  instruments: { symbol: string; market: string; name: string; description: string }[];
+}) {
+  const qc = useQueryClient();
+  return (
+    <div className="card overflow-hidden">
+      <div className="px-4 py-2 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 flex items-baseline justify-between">
+        <div className="text-sm font-semibold">
+          Gap: {_CLASS_LABEL[asset] ?? asset}
+        </div>
+        <div className="text-[11px] text-zinc-500">
+          common instruments below — not advice
+        </div>
+      </div>
+      {instruments.length === 0 ? (
+        <div className="p-4 text-xs text-zinc-500">No reference instruments listed.</div>
+      ) : (
+        <table className="w-full text-xs">
+          <tbody>
+            {instruments.map((i) => (
+              <tr key={`${i.symbol}.${i.market}`} className="border-t border-zinc-200 dark:border-zinc-800">
+                <td className="px-3 py-1.5 align-top">
+                  <div className="font-semibold">{i.symbol}</div>
+                  <div className="text-[10px] text-zinc-500 uppercase">{i.market}</div>
+                </td>
+                <td className="px-2 py-1.5 align-top">
+                  <div className="font-medium">{i.name}</div>
+                  <div className="text-[11px] text-zinc-500 leading-snug">{i.description}</div>
+                </td>
+                <td className="px-2 py-1.5 align-top w-20 text-right">
+                  <AddInstrumentButton instrument={i} qc={qc} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function AddInstrumentButton({
+  instrument: i,
+  qc,
+}: {
+  instrument: { symbol: string; market: string };
+  qc: ReturnType<typeof useQueryClient>;
+}) {
+  const [added, setAdded] = useState(false);
+  const m = useMutation({
+    mutationFn: () =>
+      api.addWatchlist({
+        ticker: i.symbol,
+        market: i.market,
+        note: "diversification",
+      }),
+    onSuccess: () => {
+      setAdded(true);
+      qc.invalidateQueries({ queryKey: ["watchlist"] });
+    },
+    onError: (e: Error) => {
+      const msg = e.message.toLowerCase();
+      if (msg.includes("already") || msg.includes("unique") || msg.includes("conflict")) {
+        setAdded(true);
+      }
+    },
+  });
+  return (
+    <button
+      className="text-[11px] px-2 py-0.5 rounded border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-50"
+      onClick={() => m.mutate()}
+      disabled={added || m.isPending}
+    >
+      {m.isPending ? "…" : added ? "✓ watching" : "+ Watch"}
+    </button>
   );
 }
 
@@ -103,7 +299,10 @@ function DiscoverSection() {
                 {Object.keys(data.universe_sizes).length} markets · excluded{" "}
                 {data.excluded_count} you already hold
               </span>
-              <span>· {data.scanned_at}{data.cached ? " (cached)" : ""}</span>
+              <LastRefreshed
+                at={data.scanned_at}
+                label={data.cached ? "cached" : "scanned"}
+              />
             </>
           )}
           <button

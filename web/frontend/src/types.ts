@@ -340,6 +340,29 @@ export interface DiscoveryRow {
   error: string | null;
 }
 
+export interface AssetSlice {
+  asset_class: string;
+  market_value: number;
+  pct: number;
+  n_positions: number;
+}
+
+export interface DiversificationInstrument {
+  symbol: string;
+  market: string;
+  name: string;
+  asset_class: string;
+  description: string;
+}
+
+export interface DiversificationReport {
+  by_asset: AssetSlice[];
+  total_value: number;
+  gaps: string[];
+  suggestions: Record<string, DiversificationInstrument[]>;
+  note: string;
+}
+
 export interface Discovery {
   by_market: Record<string, DiscoveryRow[]>;
   universe_sizes: Record<string, number>;

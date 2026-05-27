@@ -281,6 +281,33 @@ class DiscoveryOut(BaseModel):
     )
 
 
+class AssetSliceOut(BaseModel):
+    asset_class: str
+    market_value: float
+    pct: float
+    n_positions: int
+
+
+class DiversificationInstrumentOut(BaseModel):
+    symbol: str
+    market: str
+    name: str
+    asset_class: str
+    description: str
+
+
+class DiversificationOut(BaseModel):
+    by_asset: list[AssetSliceOut]
+    total_value: float
+    gaps: list[str]
+    suggestions: dict[str, list[DiversificationInstrumentOut]]
+    note: str = (
+        "Asset classification is heuristic (symbol-based). The suggestion "
+        "list is widely-traded reference instruments per asset class — a "
+        "starting point for research, not a recommendation."
+    )
+
+
 class InsightsOut(BaseModel):
     conviction: list[ConvictionRow]
     watchlist: list[CardRowOut]

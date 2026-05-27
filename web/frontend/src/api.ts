@@ -14,6 +14,7 @@ import type {
   ChainStats,
   CoveredCalls,
   Discovery,
+  DiversificationReport,
   IVSnapshot,
   LiveQuotes,
   Lookup,
@@ -143,6 +144,8 @@ export const api = {
   },
 
   getInsights: () => request<Insights>("/insights"),
+
+  diversification: () => request<DiversificationReport>("/insights/diversification"),
 
   discover: (opts: { markets?: string[]; refresh?: boolean; minScore?: number; limitPerMarket?: number } = {}) => {
     const params = new URLSearchParams();

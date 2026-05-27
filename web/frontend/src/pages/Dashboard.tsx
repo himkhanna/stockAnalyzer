@@ -121,6 +121,7 @@ export function Dashboard({ onLoadedAt }: Props) {
         signalCounts={q.data.signal_counts}
         overweight={q.data.overweight_count}
         isLive={!!live.data?.any_market_open && Object.keys(liveByKey).length > 0}
+        liveAsOf={firstAsOf(live.data?.quotes ?? [])}
       />
 
       <FilterBar
@@ -176,6 +177,10 @@ interface BucketAcc {
   today_pnl: number;
   n_positions: number;
   _hasToday: boolean;
+}
+
+function firstAsOf(quotes: LiveQuote[]): string | undefined {
+  return quotes[0]?.as_of;
 }
 
 function computeLiveBuckets(

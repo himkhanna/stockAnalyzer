@@ -25,6 +25,7 @@ import {
 
 import { api } from "../api";
 import { EmptyState } from "../components/EmptyState";
+import { LastRefreshed } from "../components/LastRefreshed";
 import { TickerCombo } from "../components/TickerCombo";
 import { bsPrice } from "../lib/blackScholes";
 import type { OptionChain, OptionRow, PayoffLeg } from "../types";
@@ -131,13 +132,18 @@ function ChainSection({
 
   return (
     <section className="space-y-3">
-      <div className="flex items-baseline justify-between">
+      <div className="flex items-baseline justify-between gap-3 flex-wrap">
         <h2 className="text-base font-bold">Option chain</h2>
-        {chain.data?.spot && (
-          <span className="text-xs text-zinc-500">
-            spot ₹{chain.data.spot.toFixed(2)} · {chain.data.days_to_expiry}d to expiry · r {(chain.data.risk_free_rate * 100).toFixed(1)}%
-          </span>
-        )}
+        <div className="flex items-baseline gap-3">
+          {chain.data?.spot && (
+            <span className="text-xs text-zinc-500">
+              spot ₹{chain.data.spot.toFixed(2)} · {chain.data.days_to_expiry}d to expiry · r {(chain.data.risk_free_rate * 100).toFixed(1)}%
+            </span>
+          )}
+          {chain.data && chain.submittedAt && (
+            <LastRefreshed at={new Date(chain.submittedAt).toISOString()} label="fetched" compact />
+          )}
+        </div>
       </div>
 
       <form
