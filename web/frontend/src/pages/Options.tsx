@@ -26,6 +26,7 @@ import {
 import { api } from "../api";
 import { EmptyState } from "../components/EmptyState";
 import { TickerCombo } from "../components/TickerCombo";
+import { bsPrice } from "../lib/blackScholes";
 import type { OptionChain, OptionRow, PayoffLeg } from "../types";
 
 export function OptionsPage() {
@@ -918,6 +919,13 @@ function PayoffSection({
     { id: _nextId++, qty: "1", right: "call", strike: "100", premium: "2.5" },
   ]);
 
+  // T+0 overlay inputs. Off by default so the page stays "pure math at
+  // expiry" until the user opts in.
+  const [t0On, setT0On] = useState(false);
+  const [daysToExpiry, setDaysToExpiry] = useState("30");
+  const [ivPct, setIvPct] = useState("25");
+  const [rPct, setRPct] = useState("7");
+
   // When a template is selected upstream, materialise it into the legs.
   useEffect(() => {
     if (!initialLegs) return;
@@ -971,7 +979,7 @@ function PayoffSection({
       </div>
 
       <div className="card p-4 space-y-4">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 items-end">
           <div>
             <label className="text-xs text-zinc-500 mb-1 block">Spot</label>
             <input
@@ -990,6 +998,57 @@ function PayoffSection({
               value={lotSize}
               onChange={(e) => setLotSize(e.target.value)}
             />
+          </div>
+          <div className="col-span-2 md:col-span-3">
+            <div className="flex items-center gap-2 mb-1">
+              <label className="text-xs text-zinc-500 flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={t0On}
+                  onChange={(e) => setT0On(e.target.checked)}
+                  className="accent-blue-500"
+                />
+                T+0 overlay
+              </label>
+              <span className="text-[10px] text-zinc-400">
+                Black-Scholes P/L now, alongside the at-expiry curve
+              </span>
+            </div>
+            {t0On && (
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="text-[10px] text-zinc-500 mb-0.5 block">Days to expiry</label>
+                  <input
+                    className="input text-sm"
+                    type="number"
+                    min={0}
+                    value={daysToExpiry}
+                    onChange={(e) => setDaysToExpiry(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-zinc-500 mb-0.5 block">IV %</label>
+                  <input
+                    className="input text-sm"
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={ivPct}
+                    onChange={(e) => setIvPct(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-zinc-500 mb-0.5 block">Rate %</label>
+                  <input
+                    className="input text-sm"
+                    type="number"
+                    step="any"
+                    value={rPct}
+                    onChange={(e) => setRPct(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1093,7 +1152,25 @@ function PayoffSection({
           <div className="text-sm text-bear-500">{(compute.error as Error).message}</div>
         )}
 
-        {compute.data && <PayoffResult data={compute.data} spot={parseFloat(spot) || 0} />}
+        {compute.data && (
+          <PayoffResult
+            data={compute.data}
+            spot={parseFloat(spot) || 0}
+            t0Curve={
+              t0On
+                ? computeT0Curve({
+                    curveXs: compute.data.curve.map((p) => p.s),
+                    legs: legs,
+                    lotSize: parseInt(lotSize) || 1,
+                    costBasis: compute.data.cost_basis,
+                    days: parseFloat(daysToExpiry) || 0,
+                    ivDecimal: (parseFloat(ivPct) || 0) / 100,
+                    rDecimal: (parseFloat(rPct) || 0) / 100,
+                  })
+                : undefined
+            }
+          />
+        )}
       </div>
     </section>
   );
@@ -1102,20 +1179,33 @@ function PayoffSection({
 function PayoffResult({
   data,
   spot,
+  t0Curve,
 }: {
   data: import("../types").PayoffOut;
   spot: number;
+  t0Curve?: { s: number; pnl_now: number }[];
 }) {
+  // Merge expiry + T+0 curves on the same x-axis when overlay is on.
+  const merged = useMemo(() => {
+    if (!t0Curve) return data.curve.map((p) => ({ s: p.s, pnl: p.pnl, pnl_now: null }));
+    const t0Map = new Map(t0Curve.map((p) => [p.s, p.pnl_now]));
+    return data.curve.map((p) => ({
+      s: p.s,
+      pnl: p.pnl,
+      pnl_now: t0Map.get(p.s) ?? null,
+    }));
+  }, [data.curve, t0Curve]);
+
   return (
     <div className="space-y-3 pt-3 border-t border-zinc-200 dark:border-zinc-800">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         <Stat
-          label="Max gain"
+          label="Max gain (expiry)"
           v={data.max_gain}
           tone={data.max_gain > 0 ? "bull" : "neutral"}
         />
         <Stat
-          label="Max loss"
+          label="Max loss (expiry)"
           v={data.max_loss}
           tone={data.max_loss < 0 ? "bear" : "neutral"}
         />
@@ -1135,13 +1225,13 @@ function PayoffResult({
 
       <div className="h-72 w-full">
         <ResponsiveContainer>
-          <LineChart data={data.curve} margin={{ left: 10, right: 10, top: 10, bottom: 10 }}>
+          <LineChart data={merged} margin={{ left: 10, right: 10, top: 10, bottom: 10 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(120,120,120,0.2)" />
             <XAxis
               dataKey="s"
               tick={{ fontSize: 11 }}
               tickFormatter={(v) => v.toFixed(0)}
-              label={{ value: "Underlying at expiry", position: "insideBottom", offset: -5, fontSize: 11 }}
+              label={{ value: "Underlying", position: "insideBottom", offset: -5, fontSize: 11 }}
             />
             <YAxis tick={{ fontSize: 11 }} />
             <Tooltip
@@ -1149,6 +1239,7 @@ function PayoffResult({
               formatter={(v: number) => v.toFixed(2)}
               labelFormatter={(s: number) => `S = ${s.toFixed(2)}`}
             />
+            {t0Curve && <Legend wrapperStyle={{ fontSize: 11 }} />}
             <ReferenceLine y={0} stroke="rgba(120,120,120,0.6)" />
             {spot > 0 && (
               <ReferenceLine
@@ -1169,15 +1260,69 @@ function PayoffResult({
             <Line
               type="monotone"
               dataKey="pnl"
+              name="At expiry"
               stroke="#3b82f6"
               strokeWidth={2}
               dot={false}
             />
+            {t0Curve && (
+              <Line
+                type="monotone"
+                dataKey="pnl_now"
+                name="Today (Black-Scholes)"
+                stroke="#f59e0b"
+                strokeWidth={2}
+                strokeDasharray="4 2"
+                dot={false}
+                connectNulls
+              />
+            )}
           </LineChart>
         </ResponsiveContainer>
       </div>
     </div>
   );
+}
+
+function computeT0Curve({
+  curveXs,
+  legs,
+  lotSize,
+  costBasis,
+  days,
+  ivDecimal,
+  rDecimal,
+}: {
+  curveXs: number[];
+  legs: LegInput[];
+  lotSize: number;
+  costBasis: number;
+  days: number;
+  ivDecimal: number;
+  rDecimal: number;
+}): { s: number; pnl_now: number }[] {
+  if (days <= 0 || ivDecimal <= 0) {
+    // At T=0 the T+0 curve equals the at-expiry curve — return identity.
+    // bsPrice handles this fallback, but skip the work.
+    return [];
+  }
+  const T = days / 365;
+  const parsedLegs = legs
+    .map((l) => ({
+      qty: parseInt(l.qty) || 0,
+      right: l.right,
+      strike: parseFloat(l.strike) || 0,
+    }))
+    .filter((l) => l.qty !== 0 && l.strike > 0);
+
+  return curveXs.map((S) => {
+    let value = 0;
+    for (const leg of parsedLegs) {
+      value += leg.qty * bsPrice(S, leg.strike, T, rDecimal, ivDecimal, leg.right);
+    }
+    const valueScaled = value * lotSize;
+    return { s: S, pnl_now: Math.round((valueScaled - costBasis) * 100) / 100 };
+  });
 }
 
 function Stat({
