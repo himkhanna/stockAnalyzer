@@ -8,6 +8,8 @@ Run (dev): uvicorn web.api.main:app --reload --port 8765
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -28,11 +30,57 @@ from .routers import portfolio as portfolio_router
 from .routers import quotes as quotes_router
 from .routers import search as search_router
 from .routers import watchlist as watchlist_router
+from .state import get_dashboard
+
+
+_log = logging.getLogger("portfolio_intel.warmer")
+
+# Refresh the dashboard cache this often so the user never lands on
+# a cold cache. Slightly less than the cache TTL (1h) so we always
+# beat expiry. Override via env: PI_WARMER_INTERVAL_S.
+_WARMER_INTERVAL_S = int(os.environ.get("PI_WARMER_INTERVAL_S", str(45 * 60)))
+# Set PI_DISABLE_WARMER=1 to turn off the background task (e.g. for tests).
+_WARMER_DISABLED = os.environ.get("PI_DISABLE_WARMER", "").lower() in ("1", "true", "yes")
+
+
+async def _dashboard_warmer():
+    """Periodic background task that re-warms the dashboard cache so
+    every Insights / Dashboard click hits a fresh in-memory result.
+
+    Runs forever. Each iteration:
+      - sleeps for _WARMER_INTERVAL_S
+      - calls get_dashboard(force=True) in a thread (it does blocking
+        yfinance work)
+      - swallows any exception (yfinance throttling, network blips
+        shouldn't kill the warmer)
+    """
+    # Wait a beat after startup so the first user request isn't competing
+    # with us for yfinance bandwidth.
+    await asyncio.sleep(30)
+    while True:
+        try:
+            await asyncio.to_thread(get_dashboard, force=True)
+            _log.info("dashboard cache warmed")
+        except Exception as e:
+            _log.warning("warmer failed (will retry): %s", e)
+        await asyncio.sleep(_WARMER_INTERVAL_S)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    yield
+    warmer_task: asyncio.Task | None = None
+    if not _WARMER_DISABLED:
+        warmer_task = asyncio.create_task(_dashboard_warmer())
+        _log.info("dashboard warmer started (interval %ds)", _WARMER_INTERVAL_S)
+    try:
+        yield
+    finally:
+        if warmer_task:
+            warmer_task.cancel()
+            try:
+                await warmer_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 app = FastAPI(

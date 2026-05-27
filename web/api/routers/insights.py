@@ -273,6 +273,9 @@ def _watchlist_panel() -> list[CardRowOut]:
 # --- Market pulse (indices) ---
 
 def _indices_panel() -> list[IndexSnapshot]:
+    """Bellwether indices. We silently skip indices yfinance can't price
+    (e.g. UAE indices ^DFMGI / ^ADI have spotty coverage). Showing
+    rows with 'no history available' adds noise the user can't act on."""
     snaps: list[IndexSnapshot] = []
     src = get_source()
     for symbol, name, market_code in INDICES:
@@ -282,12 +285,13 @@ def _indices_panel() -> list[IndexSnapshot]:
             continue
         try:
             row = build_card_for(symbol, mkt)
-        except Exception as e:
-            snaps.append(IndexSnapshot(
-                symbol=symbol, name=name, market=market_code, error=str(e),
-            ))
-            continue
+        except Exception:
+            continue   # silently drop — no usable data
         c = row.card
+        # Card-level error or missing price → drop from market pulse rather
+        # than showing a red error tile every load.
+        if c.get("error") or c.get("price") is None:
+            continue
         snaps.append(IndexSnapshot(
             symbol=symbol,
             name=name,
@@ -297,10 +301,9 @@ def _indices_panel() -> list[IndexSnapshot]:
             rsi=c.get("rsi"),
             trend=c.get("trend"),
             score_label=c.get("score_label"),
-            error=c.get("error"),
+            error=None,
         ))
-        # Quiet unused-source warning.
-        _ = src
+        _ = src   # quiet unused-source warning
     return snaps
 
 
