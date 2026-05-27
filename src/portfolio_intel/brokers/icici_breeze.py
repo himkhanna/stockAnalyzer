@@ -18,9 +18,11 @@ Auth flow Breeze requires (one-time-per-day):
 """
 from __future__ import annotations
 
+import sys
+import time
 import urllib.parse
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time as _time_mod, timedelta, timezone
 from typing import Optional
 
 
@@ -38,6 +40,43 @@ class BreezeNotConnected(BreezeError):
 
 class BreezeSessionExpired(BreezeError):
     """Session expired (Breeze sessions die at midnight IST). Reconnect."""
+
+
+def _import_breeze_with_retry(max_attempts: int = 3):
+    """Import breeze_connect.BreezeConnect, retrying on the flaky
+    SecurityMaster.zip download.
+
+    The SDK fetches a 3MB+ master file at MODULE IMPORT TIME. ICICI's
+    CDN occasionally truncates the response (http.client.IncompleteRead),
+    which bubbles out as a non-ImportError exception during the import
+    statement. Python doesn't cache a failed module load, so retrying
+    just works — we add a small backoff between attempts.
+    """
+    last_err: Optional[BaseException] = None
+    for attempt in range(max_attempts):
+        try:
+            from breeze_connect import BreezeConnect  # type: ignore
+            return BreezeConnect
+        except ImportError as e:
+            # Genuine "not installed" — don't retry.
+            raise BreezeNotInstalled(
+                "breeze-connect is not installed. Run: pip install -e '.[brokers]'"
+            ) from e
+        except Exception as e:
+            last_err = e
+            # Best-effort cleanup of any partial state so the next
+            # import doesn't reuse a half-loaded module.
+            for mod_name in [m for m in sys.modules if m.startswith("breeze_connect")]:
+                sys.modules.pop(mod_name, None)
+            if attempt < max_attempts - 1:
+                time.sleep(0.8 * (attempt + 1))
+
+    raise BreezeError(
+        "ICICI SDK init failed after retries — typically a truncated "
+        f"SecurityMaster.zip download from icicidirect.com. Try again "
+        f"shortly or restart the backend. Last error: "
+        f"{type(last_err).__name__ if last_err else 'unknown'}: {last_err}"
+    ) from last_err
 
 
 @dataclass(frozen=True)
@@ -82,7 +121,7 @@ def next_session_expiry(now: Optional[datetime] = None) -> datetime:
     """Breeze sessions die at midnight IST. Return the expiry timestamp (UTC)."""
     now = now or datetime.now(tz=timezone.utc)
     now_ist = now.astimezone(_IST)
-    expiry_ist = datetime.combine(now_ist.date() + timedelta(days=1), time.min, tzinfo=_IST)
+    expiry_ist = datetime.combine(now_ist.date() + timedelta(days=1), _time_mod.min, tzinfo=_IST)
     return expiry_ist.astimezone(timezone.utc)
 
 
@@ -95,14 +134,15 @@ class BreezeClient:
     """
 
     def __init__(self, api_key: str) -> None:
-        try:
-            from breeze_connect import BreezeConnect  # type: ignore
-        except ImportError as e:
-            raise BreezeNotInstalled(
-                "breeze-connect is not installed. Run: pip install -e '.[brokers]'"
-            ) from e
+        BreezeConnect = _import_breeze_with_retry()
         self.api_key = api_key
-        self._sdk = BreezeConnect(api_key=api_key)
+        try:
+            self._sdk = BreezeConnect(api_key=api_key)
+        except Exception as e:
+            raise BreezeError(
+                f"BreezeConnect instantiation failed: "
+                f"{type(e).__name__}: {e}"
+            ) from e
 
     def connect(self, api_secret: str, session_token: str) -> None:
         """Exchange a fresh session token for an authenticated client.
