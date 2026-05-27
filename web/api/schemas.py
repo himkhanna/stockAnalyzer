@@ -335,6 +335,41 @@ class TaxHarvestOut(BaseModel):
     )
 
 
+class AttributionRowOut(BaseModel):
+    ticker: str
+    market: str
+    currency: str
+    currency_symbol: str
+    start_price: float
+    current_price: float
+    return_pct: float
+    weight_pct: float
+    contribution_pct: float
+    market_value: float
+    period_label: str
+    shares: float
+
+
+class AttributionBucketOut(BaseModel):
+    currency: str
+    currency_symbol: str
+    total_return_pct: float
+    total_value: float
+    rows: list[AttributionRowOut]
+
+
+class PerformanceOut(BaseModel):
+    period: str
+    buckets: list[AttributionBucketOut]
+    generated_at: str
+    note: str = (
+        "Single-period attribution: contribution = position weight × "
+        "position return. Weights are within currency — we never silently "
+        "FX-convert. Rows newer than the period are anchored to their "
+        "add-date close (labelled 'since added')."
+    )
+
+
 class InsightsOut(BaseModel):
     conviction: list[ConvictionRow]
     watchlist: list[CardRowOut]

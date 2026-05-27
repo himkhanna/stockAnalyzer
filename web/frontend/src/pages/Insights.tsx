@@ -61,6 +61,7 @@ export function InsightsPage() {
       </header>
 
       <AlertsSection />
+      <PerformanceSection />
       <TaxHarvestSection />
       <DiversificationSection />
       <DiscoverSection />
@@ -70,6 +71,167 @@ export function InsightsPage() {
       <SignalChangesPanel changes={d.signal_changes} />
       <EarningsPanel items={d.upcoming_earnings} />
       <RiskView risk={d.risk} />
+    </div>
+  );
+}
+
+// --- Performance attribution ---
+
+const _PERIODS: { key: string; label: string }[] = [
+  { key: "1w", label: "1W" },
+  { key: "1m", label: "1M" },
+  { key: "3m", label: "3M" },
+  { key: "6m", label: "6M" },
+  { key: "ytd", label: "YTD" },
+  { key: "1y", label: "1Y" },
+  { key: "lifetime", label: "All" },
+];
+
+function PerformanceSection() {
+  const [period, setPeriod] = useState<string>("ytd");
+  const q = useQuery({
+    queryKey: ["performance", period],
+    queryFn: () => api.performance(period),
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-baseline justify-between gap-2 flex-wrap">
+        <h2 className="text-base font-bold flex items-center gap-2">
+          <TrendingUp size={16} className="text-zinc-500" />
+          Performance attribution
+        </h2>
+        <div className="flex items-center gap-1.5">
+          {_PERIODS.map((p) => (
+            <button
+              key={p.key}
+              onClick={() => setPeriod(p.key)}
+              className={`pill text-[11px] cursor-pointer transition-all ${
+                period === p.key
+                  ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                  : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {q.isLoading ? (
+        <div className="card p-6 text-center text-sm text-zinc-500 flex items-center justify-center gap-2">
+          <Loader2 size={14} className="animate-spin" /> Computing… (first load
+          may take a minute; results cache for the day)
+        </div>
+      ) : q.error ? (
+        <EmptyState title="Could not compute">{(q.error as Error).message}</EmptyState>
+      ) : q.data && q.data.buckets.length === 0 ? (
+        <div className="card p-4 text-xs text-zinc-500">
+          No positions with usable history for this period.
+        </div>
+      ) : q.data ? (
+        <div className="space-y-4">
+          {q.data.buckets.map((b) => (
+            <AttributionBucketBlock key={b.currency} bucket={b} />
+          ))}
+          <div className="text-[11px] text-zinc-400">{q.data.note}</div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function AttributionBucketBlock({ bucket }: { bucket: import("../types").AttributionBucket }) {
+  const totalUp = bucket.total_return_pct >= 0;
+  // Find the largest absolute contribution for proportional bar widths.
+  const maxAbs = Math.max(
+    1,
+    ...bucket.rows.map((r) => Math.abs(r.contribution_pct)),
+  );
+
+  return (
+    <div className="card overflow-hidden">
+      <div className="px-4 py-2 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 flex items-baseline justify-between">
+        <div className="text-sm font-semibold">
+          {bucket.currency_symbol} bucket · {bucket.rows.length} positions
+        </div>
+        <div className={`text-sm font-bold tabular-nums ${totalUp ? "text-bull-500" : "text-bear-500"}`}>
+          {totalUp ? "+" : ""}
+          {bucket.total_return_pct.toFixed(2)}%
+        </div>
+      </div>
+      <table className="w-full text-xs">
+        <thead className="text-zinc-500 uppercase tracking-wider text-[10px]">
+          <tr>
+            <th className="text-left px-3 py-2">Ticker</th>
+            <th className="text-right px-2 py-2">Weight</th>
+            <th className="text-right px-2 py-2">Return</th>
+            <th className="text-right px-2 py-2">Contribution</th>
+            <th className="px-2 py-2">Bar</th>
+          </tr>
+        </thead>
+        <tbody>
+          {bucket.rows.map((r) => {
+            const pos = r.contribution_pct >= 0;
+            const barPct = (Math.abs(r.contribution_pct) / maxAbs) * 100;
+            return (
+              <tr
+                key={`${r.ticker}.${r.market}`}
+                className="border-t border-zinc-200 dark:border-zinc-800"
+              >
+                <td className="px-3 py-1.5">
+                  <div className="font-semibold">{r.ticker}</div>
+                  <div className="text-[10px] text-zinc-500 uppercase">
+                    {r.market}
+                    {r.period_label.startsWith("since added") && (
+                      <span className="ml-1 text-amber-700 dark:text-amber-400 normal-case">
+                        · since added
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td className="px-2 py-1.5 text-right tabular-nums">
+                  {r.weight_pct.toFixed(1)}%
+                </td>
+                <td
+                  className={`px-2 py-1.5 text-right tabular-nums ${
+                    r.return_pct > 0
+                      ? "text-bull-500"
+                      : r.return_pct < 0
+                      ? "text-bear-500"
+                      : "text-zinc-500"
+                  }`}
+                >
+                  {r.return_pct > 0 ? "+" : ""}
+                  {r.return_pct.toFixed(1)}%
+                </td>
+                <td
+                  className={`px-2 py-1.5 text-right tabular-nums font-semibold ${
+                    pos ? "text-bull-600" : "text-bear-600"
+                  }`}
+                >
+                  {pos ? "+" : ""}
+                  {r.contribution_pct.toFixed(2)}%
+                </td>
+                <td className="px-2 py-1.5 w-1/3">
+                  <div className="relative h-2 flex items-center">
+                    <div className="absolute left-1/2 top-0 bottom-0 w-px bg-zinc-300 dark:bg-zinc-700" />
+                    <div
+                      className={`absolute top-0 bottom-0 ${pos ? "bg-bull-500" : "bg-bear-500"} rounded-sm`}
+                      style={{
+                        width: `${barPct / 2}%`,
+                        ...(pos ? { left: "50%" } : { right: "50%" }),
+                      }}
+                    />
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

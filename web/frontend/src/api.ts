@@ -16,6 +16,7 @@ import type {
   Discovery,
   DiversificationReport,
   IVSnapshot,
+  Performance,
   TaxHarvest,
   LiveQuotes,
   Lookup,
@@ -149,6 +150,9 @@ export const api = {
   diversification: () => request<DiversificationReport>("/insights/diversification"),
 
   taxHarvest: () => request<TaxHarvest>("/insights/tax-harvest"),
+
+  performance: (period: string) =>
+    request<Performance>(`/insights/performance?period=${encodeURIComponent(period)}`),
 
   discover: (opts: { markets?: string[]; refresh?: boolean; minScore?: number; limitPerMarket?: number } = {}) => {
     const params = new URLSearchParams();

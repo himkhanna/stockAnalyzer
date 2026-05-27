@@ -340,6 +340,36 @@ export interface DiscoveryRow {
   error: string | null;
 }
 
+export interface AttributionRow {
+  ticker: string;
+  market: string;
+  currency: string;
+  currency_symbol: string;
+  start_price: number;
+  current_price: number;
+  return_pct: number;
+  weight_pct: number;
+  contribution_pct: number;
+  market_value: number;
+  period_label: string;
+  shares: number;
+}
+
+export interface AttributionBucket {
+  currency: string;
+  currency_symbol: string;
+  total_return_pct: number;
+  total_value: number;
+  rows: AttributionRow[];
+}
+
+export interface Performance {
+  period: string;
+  buckets: AttributionBucket[];
+  generated_at: string;
+  note: string;
+}
+
 export interface HarvestCandidate {
   ticker: string;
   market: string;

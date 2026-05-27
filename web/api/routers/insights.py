@@ -24,10 +24,13 @@ from portfolio_intel.discovery import (
     universe_for,
 )
 from portfolio_intel.markets import INDICES, Market
+from portfolio_intel.portfolio.performance import Period, attribute
 from portfolio_intel.portfolio.tax import find_harvest_candidates
 
 from ..schemas import (
     AssetSliceOut,
+    AttributionBucketOut,
+    AttributionRowOut,
     CardRowOut,
     ConvictionRow,
     CurrencyExposure,
@@ -39,6 +42,7 @@ from ..schemas import (
     HarvestCandidateOut,
     IndexSnapshot,
     InsightsOut,
+    PerformanceOut,
     RiskPanel,
     RiskTopWeight,
     SignalChange,
@@ -60,6 +64,13 @@ _CONVICTION_ABS_SCORE = 6.0
 _DISCOVERY_CACHE_FILE = Path(".discovery_cache.pkl")
 _DISCOVERY_CACHE_TTL_S = 6 * 60 * 60
 _DISCOVERY_LOCK = threading.Lock()
+
+# Performance attribution needs daily closes per holding (potentially
+# 1y back). Cache the closes series per (ticker, market) in memory for
+# the day to dedupe repeated requests; the values don't change once
+# the day's close is set.
+_HISTORY_CACHE: dict[tuple[str, str, str], "object"] = {}
+_HISTORY_LOCK = threading.Lock()
 
 # Rough FX to convert currency buckets to a common unit so we can show
 # pct-of-total exposure. NOT used for any P&L calculation — purely for
@@ -573,4 +584,111 @@ def tax_harvest() -> TaxHarvestOut:
             for c in candidates
         ],
         total_saving_by_currency={k: round(v, 2) for k, v in totals.items()},
+    )
+
+
+# --- Performance attribution ---
+
+
+_VALID_PERIODS = ("1w", "1m", "3m", "6m", "ytd", "1y", "lifetime")
+
+
+def _closes_for(symbol: str, market_code: str):
+    """Daily closes Series cached per (ticker, market, today). One
+    yfinance call per holding per day; subsequent requests within the
+    same day reuse the cached series."""
+    today = date.today().isoformat()
+    key = (symbol.upper(), market_code.upper(), today)
+    with _HISTORY_LOCK:
+        if key in _HISTORY_CACHE:
+            return _HISTORY_CACHE[key]
+    try:
+        market = Market.from_code(market_code)
+    except Exception:
+        return None
+    try:
+        df = get_source().get_history(symbol, market, period="1y", interval="1d")
+    except Exception:
+        return None
+    closes = df["close"] if (df is not None and "close" in df.columns) else None
+    with _HISTORY_LOCK:
+        _HISTORY_CACHE[key] = closes
+    return closes
+
+
+@router.get("/performance", response_model=PerformanceOut)
+def performance(
+    period: str = Query("ytd", description="1w | 1m | 3m | 6m | ytd | 1y | lifetime"),
+) -> PerformanceOut:
+    """Decompose total portfolio return over a period into per-holding
+    contributions, grouped by currency. Pure math — no opinion."""
+    if period not in _VALID_PERIODS:
+        period = "ytd"
+
+    payload = get_dashboard()
+    rows = payload["rows"]
+    store = get_store()
+    by_key = {(h.ticker.upper(), h.market_code.upper()): h for h in store.all()}
+
+    inputs = []
+    for r in rows:
+        c = r.card
+        if c.get("error"):
+            continue
+        sym = (c.get("symbol") or "").upper()
+        mkt = (c.get("market_code") or "").upper()
+        h = by_key.get((sym, mkt))
+        if h is None or h.shares <= 0:
+            continue
+        price = c.get("price")
+        if price is None or r.market_value is None:
+            continue
+
+        # lifetime path doesn't need history; skip the fetch.
+        closes = None if period == "lifetime" else _closes_for(sym, mkt)
+
+        inputs.append((
+            h.ticker,
+            h.market_code,
+            h.currency,
+            c.get("currency_symbol") or h.currency,
+            float(h.shares),
+            float(h.cost_basis),
+            float(price),
+            float(r.market_value),
+            h.date_added,
+            closes,
+        ))
+
+    buckets = attribute(inputs, period=period)  # type: ignore[arg-type]
+
+    return PerformanceOut(
+        period=period,
+        buckets=[
+            AttributionBucketOut(
+                currency=b.currency,
+                currency_symbol=b.currency_symbol,
+                total_return_pct=round(b.total_return_pct, 3),
+                total_value=round(b.total_value, 2),
+                rows=[
+                    AttributionRowOut(
+                        ticker=r.ticker,
+                        market=r.market,
+                        currency=r.currency,
+                        currency_symbol=r.currency_symbol,
+                        start_price=round(r.start_price, 2),
+                        current_price=round(r.current_price, 2),
+                        return_pct=round(r.return_pct, 3),
+                        weight_pct=round(r.weight_pct, 3),
+                        contribution_pct=round(r.contribution_pct, 3),
+                        market_value=round(r.market_value, 2),
+                        period_label=r.period_label,
+                        shares=r.shares,
+                    )
+                    for r in b.rows
+                ],
+            )
+            for b in buckets
+        ],
+        generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
     )
