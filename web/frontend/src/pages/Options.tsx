@@ -34,7 +34,7 @@ import type { OptionChain, OptionRow, PayoffLeg } from "../types";
 export function OptionsPage() {
   // Lift state so IV panel + covered-calls section can react to the chain's
   // chosen symbol/expiry without forcing the user to re-enter them.
-  const [symbol, setSymbol] = useState("RELIANCE");
+  const [symbol, setSymbol] = useState("");
   const [brokerCode, setBrokerCode] = useState("");
   const [expiry, setExpiry] = useState<string>("");
 
