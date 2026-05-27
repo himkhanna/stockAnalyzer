@@ -131,7 +131,8 @@ def chain(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"bad expiry: {expiry}")
 
-    cfg = get_store().broker_get(_BROKER)
+    store = get_store()
+    cfg = store.broker_get(_BROKER)
     if not cfg or not cfg.get("session_token"):
         raise HTTPException(
             status_code=400,
@@ -141,7 +142,10 @@ def chain(
     # Strip any yfinance suffix (.NS / .BO) before handing to Breeze — it
     # rejects qualified symbols with a generic "Error while calling service".
     bare_symbol, _ = parse_ticker(symbol, default_market=Market.NSE)
-    underlying_code = (broker_code or bare_symbol).upper()
+
+    # Resolution order: explicit override → learned dictionary → bare symbol.
+    learned_code = store.broker_code_get(_BROKER, bare_symbol)
+    underlying_code = (broker_code or learned_code or bare_symbol).upper()
 
     try:
         client = BreezeClient(cfg["api_key"])
@@ -166,6 +170,14 @@ def chain(
             )
             raise HTTPException(status_code=502, detail=f"{hint} (Breeze: {msg})")
         raise HTTPException(status_code=502, detail=msg)
+
+    # Chain came back. If the code we just used isn't the same as the bare
+    # symbol, record it so next time the user doesn't need the override.
+    # Only record on a non-empty result — an empty list often means Breeze
+    # accepted the call but the symbol still isn't a real F&O underlying.
+    if contracts and underlying_code != bare_symbol:
+        source = "chain_ok" if broker_code else "chain_ok_auto"
+        store.broker_code_upsert(_BROKER, bare_symbol, underlying_code, source)
 
     # Best-effort underlying spot price via yfinance — use the bare symbol;
     # the source re-adds the market suffix internally.

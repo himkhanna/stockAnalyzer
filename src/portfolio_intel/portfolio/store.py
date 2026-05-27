@@ -81,6 +81,15 @@ CREATE TABLE IF NOT EXISTS broker_config (
     session_expires_at TEXT,
     updated_at    TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS broker_code_map (
+    broker          TEXT NOT NULL,   -- "icici_breeze"
+    exchange_ticker TEXT NOT NULL,   -- bare NSE/BSE ticker, uppercase (e.g. "SBIN")
+    broker_code     TEXT NOT NULL,   -- broker's stock_code (e.g. "STABAN")
+    source          TEXT NOT NULL,   -- "holdings_sync" | "chain_ok" | "manual"
+    updated_at      TEXT NOT NULL,
+    PRIMARY KEY (broker, exchange_ticker)
+);
 """
 
 
@@ -358,6 +367,50 @@ class PortfolioStore:
                 (broker,),
             )
             return cur.rowcount > 0
+
+    # --- Broker stock-code dictionary ---
+
+    def broker_code_get(self, broker: str, exchange_ticker: str) -> Optional[str]:
+        """Return the broker's internal stock_code for an exchange ticker, or None."""
+        if not exchange_ticker:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT broker_code FROM broker_code_map "
+                "WHERE broker = ? AND exchange_ticker = ?",
+                (broker, exchange_ticker.upper()),
+            ).fetchone()
+            return row["broker_code"] if row else None
+
+    def broker_code_upsert(self, broker: str, exchange_ticker: str,
+                           broker_code: str, source: str) -> None:
+        """Record an (exchange_ticker → broker_code) mapping. Idempotent."""
+        if not exchange_ticker or not broker_code:
+            return
+        from datetime import datetime as _dt
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO broker_code_map
+                    (broker, exchange_ticker, broker_code, source, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(broker, exchange_ticker) DO UPDATE SET
+                    broker_code = excluded.broker_code,
+                    source      = excluded.source,
+                    updated_at  = excluded.updated_at
+                """,
+                (broker, exchange_ticker.upper(), broker_code.upper(),
+                 source, _dt.utcnow().isoformat()),
+            )
+
+    def broker_code_all(self, broker: str) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT exchange_ticker, broker_code, source, updated_at "
+                "FROM broker_code_map WHERE broker = ? ORDER BY exchange_ticker",
+                (broker,),
+            ).fetchall()
+            return [dict(r) for r in rows]
 
 
 def _row_to_holding(row: sqlite3.Row) -> Holding:

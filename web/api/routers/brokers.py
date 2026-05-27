@@ -300,7 +300,8 @@ def icici_sync_apply(
 
 
 def _fetch_holdings() -> list[BrokerHolding]:
-    cfg = get_store().broker_get(_BROKER)
+    store = get_store()
+    cfg = store.broker_get(_BROKER)
     if not cfg or not cfg.get("api_key") or not cfg.get("api_secret"):
         raise HTTPException(status_code=400, detail="ICICI credentials not configured.")
     if not _is_session_live(cfg):
@@ -311,13 +312,24 @@ def _fetch_holdings() -> list[BrokerHolding]:
     try:
         client = BreezeClient(cfg["api_key"])
         client.connect(cfg["api_secret"], cfg["session_token"])
-        return client.get_holdings()
+        holdings = client.get_holdings()
     except BreezeNotInstalled as e:
         raise HTTPException(status_code=503, detail=str(e))
     except BreezeSessionExpired as e:
         raise HTTPException(status_code=401, detail=str(e))
     except (BreezeNotConnected, BreezeError) as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+    # Free pre-population of the F&O broker-code dictionary. Each enriched
+    # holding gives us (exchange_stock_code → stock_code), which is exactly
+    # what the options chain needs when the NSE ticker differs from the
+    # ICICI internal code (e.g. EXIDEIND → EXIIND, SBIN → STABAN).
+    for h in holdings:
+        if h.exchange_stock_code and h.stock_code and h.exchange_stock_code != h.stock_code:
+            store.broker_code_upsert(
+                _BROKER, h.exchange_stock_code, h.stock_code, "holdings_sync",
+            )
+    return holdings
 
 
 def _diff_against_store(holdings: list[BrokerHolding]) -> SyncPreview:
