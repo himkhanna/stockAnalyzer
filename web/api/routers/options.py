@@ -49,8 +49,9 @@ _BROKER = "icici_breeze"
 # Cache key: (probe_version, broker_stock_code, today). Per-symbol,
 # per-day, per-candidate-generator-version. Bumping _PROBE_VERSION
 # invalidates caches when we change the set of candidate dates we test
-# (e.g. when NSE shifted stock-option expiries to last-Tuesday).
-_PROBE_VERSION = 2
+# (e.g. when NSE shifted stock-option expiries to last-Tuesday, or when
+# we widen the default months window).
+_PROBE_VERSION = 3
 _PROBE_CACHE: dict[tuple[int, str, str], list[str]] = {}
 
 # Short-lived chain cache. The Options page can fire 3+ chain-dependent
@@ -197,12 +198,19 @@ def expiries_debug(
 def expiries_probe(
     symbol: str = Query(..., description="NSE bare ticker OR ICICI broker code"),
     broker_code: Optional[str] = Query(None),
-    months: int = Query(3, ge=1, le=6, description="How many monthly cycles to probe"),
+    months: int = Query(4, ge=1, le=6, description="How many monthly cycles to probe"),
     refresh: bool = Query(False, description="Skip the cache and re-probe Breeze now"),
 ) -> ProbeOut:
     """Ask Breeze which expiry dates actually have contracts for the
     underlying. Probes every Mon-Fri of the last week of the next
-    `months` monthly cycles. Per-symbol, per-day in-memory cache."""
+    `months` monthly cycles. Per-symbol, per-day in-memory cache.
+
+    NSE/Breeze loads far-month stock-option contracts late on the
+    expiry day of the previous month. If a cached result has only a
+    single expiry, we ignore the cache and re-probe — once a new
+    far-month is in Breeze's system, the user shouldn't have to hit
+    Rescan manually for it to appear.
+    """
     store = get_store()
     cfg = store.broker_get(_BROKER)
     if not cfg or not cfg.get("session_token"):
@@ -217,11 +225,15 @@ def expiries_probe(
     underlying_code = (broker_code or learned_code or seed_code or bare_symbol).upper()
 
     cache_key = (_PROBE_VERSION, underlying_code, date.today().isoformat())
-    if not refresh and cache_key in _PROBE_CACHE:
+    cached_entry = _PROBE_CACHE.get(cache_key)
+    # Auto-bypass thin caches (≤1 expiry) — likely the early-morning
+    # snapshot before Breeze loaded all far-month contracts.
+    cache_usable = cached_entry is not None and len(cached_entry) >= 2
+    if not refresh and cache_usable:
         return ProbeOut(
             underlying_symbol=bare_symbol,
             underlying_broker_code=underlying_code,
-            expiries=_PROBE_CACHE[cache_key],
+            expiries=cached_entry,  # type: ignore[arg-type]
             probed=[],
             cached=True,
         )
@@ -239,9 +251,9 @@ def expiries_probe(
         raise HTTPException(status_code=502, detail=str(e))
 
     expiries_iso = [d.isoformat() for d in found]
-    # Only cache non-empty results — empty might mean a wrong broker code,
-    # which the user is still figuring out.
-    if expiries_iso:
+    # Cache only "healthy" results — thin/empty caches just cause the
+    # auto-bypass above to fire again on the next request, which is fine.
+    if len(expiries_iso) >= 2:
         _PROBE_CACHE[cache_key] = expiries_iso
 
     return ProbeOut(
