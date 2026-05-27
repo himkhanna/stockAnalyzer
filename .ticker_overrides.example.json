@@ -1,0 +1,7 @@
+{
+  "_about": "Map ISIN -> NSE bare ticker (without .NS suffix). Copy this file to .ticker_overrides.json and edit. Loaded by TickerResolver BEFORE Yahoo Search, so overrides win. Useful when an ISIN resolves to the wrong listing (e.g. ADR instead of NSE) or when Yahoo's search returns nothing. The _about key is ignored.",
+  "INE302A01020": "EXIDEIND",
+  "INE467B01029": "TCS",
+  "INE002A01018": "RELIANCE",
+  "INE154A01025": "ITC"
+}

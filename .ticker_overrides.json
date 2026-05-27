@@ -1,0 +1,8 @@
+{
+  "_about": "ISIN -> bare NSE symbol (no .NS). Loaded BEFORE Yahoo search, so these win. Verify on nseindia.com if unsure.",
+  "INE063P01018": "EQUITASBNK",
+  "INE266D01021": "GRAUWEIL",
+  "INE632C01026": "VIDHIING",
+  "INE082C01024": "PATELSAIR",
+  "INE301O01023": "NSDL"
+}

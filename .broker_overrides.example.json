@@ -1,0 +1,5 @@
+{
+  "_about": "Map ICICI Breeze stock_code -> NSE bare ticker (without .NS). Copy this file to .broker_overrides.json in the project root and edit. Used when Breeze's get_names() can't resolve a broker code to the real NSE listing — typically for ETFs and small-caps the SDK doesn't carry. The _about key is ignored.",
+  "NATSEC": "NETFNIFBEE",
+  "INDLE": "IDEA"
+}
