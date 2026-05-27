@@ -269,6 +269,15 @@ export interface OptionExpiries {
   weekly: string[];
 }
 
+export interface OptionExpiriesProbe {
+  underlying_symbol: string;
+  underlying_broker_code: string;
+  expiries: string[];
+  probed: string[];
+  cached: boolean;
+  note: string;
+}
+
 export interface PayoffLeg {
   qty: number;
   right: "call" | "put";

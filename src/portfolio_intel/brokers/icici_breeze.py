@@ -270,6 +270,53 @@ class BreezeClient:
         out.sort(key=lambda c: (c.strike_price, 0 if c.right == "call" else 1))
         return out
 
+    def find_available_expiries(
+        self,
+        *,
+        stock_code: str,
+        candidates: list[date],
+    ) -> list[date]:
+        """Probe Breeze for which candidate expiry dates actually have
+        contracts for an underlying.
+
+        We try the call side only — calls and puts share the same expiry
+        calendar, so probing one side is enough and halves the API cost.
+        A date is included in the result if Breeze returns at least one
+        contract row for it.
+
+        Raises BreezeSessionExpired on auth errors. Per-date errors are
+        swallowed so a single bad probe doesn't kill the whole list.
+        """
+        out: list[date] = []
+        for d in candidates:
+            try:
+                resp = self._sdk.get_option_chain_quotes(
+                    stock_code=stock_code,
+                    exchange_code="NFO",
+                    product_type="options",
+                    expiry_date=_breeze_expiry(d),
+                    right="call",
+                )
+            except Exception as e:
+                msg = str(e).lower()
+                if "session" in msg or "auth" in msg or "expired" in msg:
+                    raise BreezeSessionExpired(str(e)) from e
+                continue
+
+            if not isinstance(resp, dict):
+                continue
+            err = resp.get("Error") or resp.get("error")
+            if err:
+                msg = str(err).lower()
+                if "session" in msg or "auth" in msg:
+                    raise BreezeSessionExpired(str(err))
+                continue
+
+            records = resp.get("Success") or resp.get("success") or []
+            if isinstance(records, list) and len(records) > 0:
+                out.append(d)
+        return out
+
     def _lookup_name(self, exchange_code: str, stock_code: str) -> tuple[str, str]:
         """Resolve a Breeze stock_code → (exchange_stock_code, company_name)
         via get_names(). Returns ('', '') if the SDK call fails. Never raises."""

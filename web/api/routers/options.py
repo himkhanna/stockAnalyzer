@@ -31,6 +31,7 @@ from portfolio_intel.options import (
     DEFAULT_RISK_FREE_IN,
     bs_greeks,
     bs_price,
+    candidate_expiries,
     implied_vol,
     next_monthly_expiries,
     next_weekly_expiries,
@@ -42,6 +43,10 @@ from ..state import get_source, get_store
 
 router = APIRouter()
 _BROKER = "icici_breeze"
+
+# Cache key: (broker_stock_code, today). Per-symbol, per-day. Cleared on
+# process restart, which is the right TTL for an expiry calendar.
+_PROBE_CACHE: dict[tuple[str, str], list[str]] = {}
 
 
 # --- Schemas ---
@@ -115,9 +120,81 @@ class PayoffOut(BaseModel):
 
 @router.get("/expiries", response_model=ExpiriesOut)
 def expiries() -> ExpiriesOut:
+    """Calendar-derived expiries. Cheap fallback; use /expiries/probe for
+    per-symbol verified dates."""
     monthly = [d.isoformat() for d in next_monthly_expiries(6)]
     weekly = [d.isoformat() for d in next_weekly_expiries(8)]
     return ExpiriesOut(monthly=monthly, weekly=weekly)
+
+
+class ProbeOut(BaseModel):
+    underlying_symbol: str
+    underlying_broker_code: str
+    expiries: list[str]
+    probed: list[str]
+    cached: bool = False
+    note: str = (
+        "Verified by asking Breeze which last-week-of-month dates have "
+        "contracts for this underlying."
+    )
+
+
+@router.get("/expiries/probe", response_model=ProbeOut)
+def expiries_probe(
+    symbol: str = Query(..., description="NSE bare ticker OR ICICI broker code"),
+    broker_code: Optional[str] = Query(None),
+    months: int = Query(3, ge=1, le=6, description="How many monthly cycles to probe"),
+) -> ProbeOut:
+    """Ask Breeze which expiry dates actually have contracts for the
+    underlying. Probes every Mon-Fri of the last week of the next
+    `months` monthly cycles. Per-symbol, per-day in-memory cache."""
+    store = get_store()
+    cfg = store.broker_get(_BROKER)
+    if not cfg or not cfg.get("session_token"):
+        raise HTTPException(
+            status_code=400,
+            detail="ICICI Breeze not connected. Connect via Portfolio → ICICI Direct sync.",
+        )
+
+    bare_symbol, _ = parse_ticker(symbol, default_market=Market.NSE)
+    learned_code = store.broker_code_get(_BROKER, bare_symbol)
+    seed_code = seed_broker_code(bare_symbol)
+    underlying_code = (broker_code or learned_code or seed_code or bare_symbol).upper()
+
+    cache_key = (underlying_code, date.today().isoformat())
+    if cache_key in _PROBE_CACHE:
+        return ProbeOut(
+            underlying_symbol=bare_symbol,
+            underlying_broker_code=underlying_code,
+            expiries=_PROBE_CACHE[cache_key],
+            probed=[],
+            cached=True,
+        )
+
+    candidates = candidate_expiries(months=months)
+    try:
+        client = BreezeClient(cfg["api_key"])
+        client.connect(cfg["api_secret"], cfg["session_token"])
+        found = client.find_available_expiries(stock_code=underlying_code, candidates=candidates)
+    except BreezeNotInstalled as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except BreezeSessionExpired as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except BreezeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    expiries_iso = [d.isoformat() for d in found]
+    # Only cache non-empty results — empty might mean a wrong broker code,
+    # which the user is still figuring out.
+    if expiries_iso:
+        _PROBE_CACHE[cache_key] = expiries_iso
+
+    return ProbeOut(
+        underlying_symbol=bare_symbol,
+        underlying_broker_code=underlying_code,
+        expiries=expiries_iso,
+        probed=[d.isoformat() for d in candidates],
+    )
 
 
 @router.get("/chain", response_model=ChainOut)

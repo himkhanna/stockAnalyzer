@@ -14,6 +14,7 @@ import type {
   Lookup,
   OptionChain,
   OptionExpiries,
+  OptionExpiriesProbe,
   PayoffIn,
   PayoffOut,
   SearchOut,
@@ -179,6 +180,13 @@ export const api = {
   iciciSyncPreview: () =>
     request<SyncPreview>("/brokers/icici/sync/preview", { method: "POST" }),
   optionExpiries: () => request<OptionExpiries>("/options/expiries"),
+  optionExpiriesProbe: (symbol: string, brokerCode?: string) => {
+    const params = new URLSearchParams({ symbol });
+    if (brokerCode) params.set("broker_code", brokerCode);
+    return request<OptionExpiriesProbe>(
+      `/options/expiries/probe?${params.toString()}`,
+    );
+  },
   optionChain: (symbol: string, expiry: string, brokerCode?: string) => {
     const params = new URLSearchParams({ symbol, expiry });
     if (brokerCode) params.set("broker_code", brokerCode);

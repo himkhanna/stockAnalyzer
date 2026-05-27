@@ -49,3 +49,35 @@ def next_weekly_expiries(count: int = 8, ref: date | None = None) -> list[date]:
     else:
         first = ref + timedelta(days=days_to_thu or 7)
     return [first + timedelta(days=7 * i) for i in range(count)]
+
+
+def candidate_expiries(months: int = 3, ref: date | None = None) -> list[date]:
+    """Plausible monthly expiry dates to probe for an underlying.
+
+    NSE has shifted several products' expiry day-of-week over recent SEBI
+    cycles (last-Thursday is the historic rule, last-Tuesday is the newer
+    one for some index products, and brokers occasionally surface the
+    settlement date which is +1/+2 business days). Rather than encode the
+    full ruleset, we list every plausible last-week-of-month date and let
+    Breeze tell us which ones actually have contracts.
+
+    Returns sorted unique dates >= ref for each of the next `months`
+    monthly cycles, covering Monday through Friday of the last week.
+    """
+    ref = ref or date.today()
+    out: set[date] = set()
+    y, m = ref.year, ref.month
+    for _ in range(months):
+        # Anchor on the last Thursday, then take Mon-Fri of that week.
+        thu = last_thursday_of_month(y, m)
+        # Walk from Monday (weekday 0) to Friday (weekday 4) in that week.
+        monday = thu - timedelta(days=thu.weekday())
+        for delta in range(0, 5):
+            d = monday + timedelta(days=delta)
+            if d >= ref:
+                out.add(d)
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return sorted(out)

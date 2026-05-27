@@ -1,5 +1,5 @@
 import { Calculator, ChevronRight, Loader2, Plus, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   CartesianGrid,
@@ -41,10 +41,29 @@ function ChainSection() {
   const [brokerCode, setBrokerCode] = useState("");
   const [expiry, setExpiry] = useState<string>("");
 
-  const expiries = useQuery({
+  // Verified per-symbol expiries (asks Breeze which last-week dates actually
+  // have contracts). Falls back to the calendar list if probe hasn't run /
+  // hasn't returned anything.
+  const probe = useQuery({
+    queryKey: ["option-expiries-probe", symbol.trim().toUpperCase(), brokerCode.trim().toUpperCase()],
+    queryFn: () => api.optionExpiriesProbe(symbol.trim(), brokerCode.trim() || undefined),
+    enabled: symbol.trim().length >= 2,
+    staleTime: 60 * 60 * 1000, // 1h — backend already caches per-day
+    retry: false,
+  });
+
+  const fallback = useQuery({
     queryKey: ["option-expiries"],
     queryFn: api.optionExpiries,
   });
+
+  // Drop a previously-picked expiry if the probed list no longer contains it.
+  const probedExpiries = probe.data?.expiries ?? [];
+  useEffect(() => {
+    if (expiry && probedExpiries.length > 0 && !probedExpiries.includes(expiry)) {
+      setExpiry("");
+    }
+  }, [expiry, probedExpiries]);
 
   const chain = useMutation({
     mutationFn: () => api.optionChain(symbol, expiry, brokerCode || undefined),
@@ -99,26 +118,44 @@ function ChainSection() {
           />
         </div>
         <div className="md:col-span-3">
-          <label className="text-xs text-zinc-500 mb-1 block">Expiry</label>
+          <label className="text-xs text-zinc-500 mb-1 block">
+            Expiry{" "}
+            {probe.isFetching && (
+              <Loader2 size={10} className="inline animate-spin text-zinc-400" />
+            )}
+            {probe.data && !probe.isFetching && (
+              <span className="text-zinc-400">· verified</span>
+            )}
+          </label>
           <select
             className="input"
             value={expiry}
             onChange={(e) => setExpiry(e.target.value)}
           >
             <option value="">— pick one —</option>
-            {expiries.data?.weekly && (
-              <optgroup label="Weekly (NIFTY/BANKNIFTY only)">
-                {expiries.data.weekly.map((d) => (
-                  <option key={`w-${d}`} value={d}>{d}</option>
+            {probedExpiries.length > 0 ? (
+              <optgroup label={`Available for ${probe.data?.underlying_broker_code ?? symbol}`}>
+                {probedExpiries.map((d) => (
+                  <option key={`p-${d}`} value={d}>{d}</option>
                 ))}
               </optgroup>
-            )}
-            {expiries.data?.monthly && (
-              <optgroup label="Monthly">
-                {expiries.data.monthly.map((d) => (
-                  <option key={`m-${d}`} value={d}>{d}</option>
-                ))}
-              </optgroup>
+            ) : (
+              <>
+                {fallback.data?.weekly && (
+                  <optgroup label="Weekly (NIFTY/BANKNIFTY only)">
+                    {fallback.data.weekly.map((d) => (
+                      <option key={`w-${d}`} value={d}>{d}</option>
+                    ))}
+                  </optgroup>
+                )}
+                {fallback.data?.monthly && (
+                  <optgroup label="Monthly (calendar)">
+                    {fallback.data.monthly.map((d) => (
+                      <option key={`m-${d}`} value={d}>{d}</option>
+                    ))}
+                  </optgroup>
+                )}
+              </>
             )}
           </select>
         </div>
