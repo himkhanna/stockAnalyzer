@@ -8,18 +8,24 @@ support, never advice.
 from __future__ import annotations
 
 import os
+import pickle
+import threading
+import time as _time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
+from portfolio_intel.discovery import scan_universe, universe_for
 from portfolio_intel.markets import INDICES, Market
 
 from ..schemas import (
     CardRowOut,
     ConvictionRow,
     CurrencyExposure,
+    DiscoveryOut,
+    DiscoveryRowOut,
     EarningsItem,
     IndexSnapshot,
     InsightsOut,
@@ -36,6 +42,13 @@ _DIGEST_DIR = Path(os.environ.get("DIGEST_DIR", "digests"))
 # Conviction = strong score AND a confirming rule. The threshold matches
 # the Strong Buy / Strong Sell cutoff in scoring/weights.py (±6.0).
 _CONVICTION_ABS_SCORE = 6.0
+
+# Discovery scan is expensive (~1s per ticker × ~100 tickers). Cache the
+# result on disk for 6h so the page loads instantly after the first scan
+# of the day. User can force-refresh.
+_DISCOVERY_CACHE_FILE = Path(".discovery_cache.pkl")
+_DISCOVERY_CACHE_TTL_S = 6 * 60 * 60
+_DISCOVERY_LOCK = threading.Lock()
 
 # Rough FX to convert currency buckets to a common unit so we can show
 # pct-of-total exposure. NOT used for any P&L calculation — purely for
@@ -309,3 +322,126 @@ def _earnings_date_from_ticker(ticker) -> Optional["date"]:
             return min(future).date()
 
     return None
+
+
+# --- Discovery ---
+
+
+@router.get("/discover", response_model=DiscoveryOut)
+def discover(
+    markets: Optional[str] = Query(
+        None,
+        description="Comma-separated market codes (NSE,US,DFM,ADX). Default: all four.",
+    ),
+    min_score: float = Query(2.0, description="Minimum score to surface (default 2.0 = Buy threshold)"),
+    limit_per_market: int = Query(10, ge=1, le=50),
+    refresh: bool = Query(False, description="Skip cache and re-scan now"),
+) -> DiscoveryOut:
+    """Scan curated per-market universes and return high-scoring names
+    that aren't in the user's portfolio."""
+    requested = _parse_markets(markets) or list(_DEFAULT_MARKETS)
+
+    # Build the exclusion set once from current holdings.
+    store = get_store()
+    holdings = store.all()
+    exclude = [(h.ticker, h.market_code) for h in holdings]
+
+    # Cache key includes the request shape so different filter combos don't
+    # collide. The dominant cost is the universe scan, so we cache the
+    # per-market raw scan and slice/filter at request time.
+    cached = _discovery_load() if not refresh else None
+    by_market: dict[str, list[DiscoveryRowOut]] = {}
+    universe_sizes: dict[str, int] = {}
+
+    with _DISCOVERY_LOCK:
+        cache: dict = cached or {"per_market": {}, "saved_ts": 0.0}
+        per_market_cache: dict = cache.get("per_market", {})
+        cache_age = _time.time() - cache.get("saved_ts", 0.0)
+        fresh_cache = cache_age < _DISCOVERY_CACHE_TTL_S and not refresh
+
+        for code in requested:
+            try:
+                market = Market.from_code(code)
+            except Exception:
+                continue
+            universe_sizes[code] = len(universe_for(market))
+
+            if fresh_cache and code in per_market_cache:
+                rows = per_market_cache[code]
+            else:
+                discovered = scan_universe(
+                    market,
+                    exclude=exclude,
+                    build_card=build_card_for,
+                    min_score=0.0,            # store everything; filter below
+                    limit=10_000,
+                )
+                rows = [DiscoveryRowOut(
+                    symbol=d.symbol,
+                    market=d.market_code,
+                    currency_symbol=d.currency_symbol,
+                    price=d.price,
+                    change_pct=d.change_pct,
+                    score_value=d.score_value,
+                    score_label=d.score_label,
+                    rsi=d.rsi,
+                    trend=d.trend,
+                    sentiment_label=d.sentiment_label,
+                    rule_count=d.rule_count,
+                    rule_names=d.rule_names,
+                    error=d.error,
+                ) for d in discovered]
+                per_market_cache[code] = rows
+
+            # Apply request-time filters.
+            filtered = [
+                r for r in rows
+                if r.score_value is not None and r.score_value >= min_score
+            ]
+            filtered.sort(key=lambda r: r.score_value or 0.0, reverse=True)
+            by_market[code] = filtered[:limit_per_market]
+
+        # Save back to disk (covers both refresh and first-time fills).
+        if not fresh_cache or refresh:
+            cache["per_market"] = per_market_cache
+            cache["saved_ts"] = _time.time()
+            _discovery_save(cache)
+
+    return DiscoveryOut(
+        by_market=by_market,
+        universe_sizes=universe_sizes,
+        excluded_count=len(exclude),
+        scanned_at=datetime.fromtimestamp(cache.get("saved_ts", _time.time())).strftime("%Y-%m-%d %H:%M"),
+        cached=bool(cached and not refresh),
+    )
+
+
+_DEFAULT_MARKETS = ("NSE", "US", "DFM", "ADX")
+
+
+def _parse_markets(s: Optional[str]) -> list[str]:
+    if not s:
+        return []
+    return [m.strip().upper() for m in s.split(",") if m.strip()]
+
+
+def _discovery_load() -> Optional[dict]:
+    if not _DISCOVERY_CACHE_FILE.exists():
+        return None
+    try:
+        with _DISCOVERY_CACHE_FILE.open("rb") as f:
+            return pickle.load(f)
+    except (pickle.UnpicklingError, EOFError, AttributeError, ImportError):
+        try:
+            _DISCOVERY_CACHE_FILE.unlink()
+        except OSError:
+            pass
+        return None
+
+
+def _discovery_save(payload: dict) -> None:
+    try:
+        with _DISCOVERY_CACHE_FILE.open("wb") as f:
+            pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+    except OSError:
+        pass

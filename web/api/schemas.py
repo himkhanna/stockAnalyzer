@@ -251,6 +251,35 @@ class RiskPanel(BaseModel):
     biggest_losers: list[CardRowOut]
 
 
+class DiscoveryRowOut(BaseModel):
+    symbol: str
+    market: str
+    currency_symbol: str
+    price: float | None = None
+    change_pct: float | None = None
+    score_value: float | None = None
+    score_label: str | None = None
+    rsi: float | None = None
+    trend: str | None = None
+    sentiment_label: str | None = None
+    rule_count: int = 0
+    rule_names: list[str] = []
+    error: str | None = None
+
+
+class DiscoveryOut(BaseModel):
+    by_market: dict[str, list[DiscoveryRowOut]]   # market_code -> rows
+    universe_sizes: dict[str, int]                # market_code -> total scanned
+    excluded_count: int                            # holdings skipped
+    scanned_at: str
+    cached: bool = False
+    note: str = (
+        "Scored by the same deterministic engine the rest of the app uses. "
+        "Filtered to score >= +2 and ranked by score. Information only — "
+        "not a recommendation."
+    )
+
+
 class InsightsOut(BaseModel):
     conviction: list[ConvictionRow]
     watchlist: list[CardRowOut]

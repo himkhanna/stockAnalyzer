@@ -323,6 +323,31 @@ export interface CoveredCalls {
   note: string;
 }
 
+export interface DiscoveryRow {
+  symbol: string;
+  market: string;
+  currency_symbol: string;
+  price: number | null;
+  change_pct: number | null;
+  score_value: number | null;
+  score_label: SignalLabel | null;
+  rsi: number | null;
+  trend: string | null;
+  sentiment_label: string | null;
+  rule_count: number;
+  rule_names: string[];
+  error: string | null;
+}
+
+export interface Discovery {
+  by_market: Record<string, DiscoveryRow[]>;
+  universe_sizes: Record<string, number>;
+  excluded_count: number;
+  scanned_at: string;
+  cached: boolean;
+  note: string;
+}
+
 export interface OIByStrike {
   strike: number;
   call_oi: number;

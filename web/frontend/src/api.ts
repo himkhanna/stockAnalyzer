@@ -13,6 +13,7 @@ import type {
   Insights,
   ChainStats,
   CoveredCalls,
+  Discovery,
   IVSnapshot,
   LiveQuotes,
   Lookup,
@@ -142,6 +143,16 @@ export const api = {
   },
 
   getInsights: () => request<Insights>("/insights"),
+
+  discover: (opts: { markets?: string[]; refresh?: boolean; minScore?: number; limitPerMarket?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.markets?.length) params.set("markets", opts.markets.join(","));
+    if (opts.refresh) params.set("refresh", "true");
+    if (opts.minScore != null) params.set("min_score", String(opts.minScore));
+    if (opts.limitPerMarket != null) params.set("limit_per_market", String(opts.limitPerMarket));
+    const qs = params.toString();
+    return request<Discovery>(`/insights/discover${qs ? `?${qs}` : ""}`);
+  },
 
   liveQuotes: () => request<LiveQuotes>("/quotes/live"),
 

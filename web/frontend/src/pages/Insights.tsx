@@ -1,4 +1,4 @@
-import { AlertTriangle, Bell, BellOff, CalendarClock, Check, CheckCheck, Loader2, Trash2, TrendingDown, TrendingUp } from "lucide-react";
+import { AlertTriangle, Bell, BellOff, CalendarClock, Check, CheckCheck, Compass, Loader2, RefreshCw, Trash2, TrendingDown, TrendingUp } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -12,6 +12,7 @@ import type {
   AlertEvent,
   AlertKind,
   ConvictionRow,
+  DiscoveryRow,
   EarningsItem,
   IndexSnapshot,
   RiskPanel,
@@ -19,6 +20,7 @@ import type {
   SignalLabel,
   WatchlistItem,
 } from "../types";
+import { SignalPill } from "../components/SignalPill";
 
 export function InsightsPage() {
   const q = useQuery({ queryKey: ["insights"], queryFn: api.getInsights });
@@ -57,6 +59,7 @@ export function InsightsPage() {
       </header>
 
       <AlertsSection />
+      <DiscoverSection />
       <MarketPulse indices={d.indices} />
       <ConvictionBoard rows={d.conviction} />
       <WatchlistSection scanned={d.watchlist} />
@@ -65,6 +68,172 @@ export function InsightsPage() {
       <RiskView risk={d.risk} />
     </div>
   );
+}
+
+// --- Discover ---
+
+function DiscoverSection() {
+  const qc = useQueryClient();
+  const q = useQuery({
+    queryKey: ["discover"],
+    queryFn: () => api.discover(),
+    staleTime: 60 * 60 * 1000,
+    retry: false,
+  });
+  const refresh = useMutation({
+    mutationFn: () => api.discover({ refresh: true }),
+    onSuccess: (data) => qc.setQueryData(["discover"], data),
+  });
+
+  const data = q.data;
+  const markets = data ? Object.keys(data.by_market) : [];
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-baseline justify-between gap-2 flex-wrap">
+        <h2 className="text-base font-bold flex items-center gap-2">
+          <Compass size={16} className="text-zinc-500" />
+          Discover
+        </h2>
+        <div className="flex items-center gap-3 text-xs text-zinc-500">
+          {data && (
+            <>
+              <span>
+                scanned {sumValues(data.universe_sizes)} names across{" "}
+                {Object.keys(data.universe_sizes).length} markets · excluded{" "}
+                {data.excluded_count} you already hold
+              </span>
+              <span>· {data.scanned_at}{data.cached ? " (cached)" : ""}</span>
+            </>
+          )}
+          <button
+            className="btn-ghost text-xs"
+            onClick={() => refresh.mutate()}
+            disabled={refresh.isPending}
+            title="Force a fresh scan (slow — ~1 min)"
+          >
+            {refresh.isPending ? (
+              <><Loader2 size={12} className="animate-spin" /> Scanning…</>
+            ) : (
+              <><RefreshCw size={12} /> Rescan</>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {q.isLoading || (refresh.isPending && !data) ? (
+        <div className="card p-6 text-center text-sm text-zinc-500 flex items-center justify-center gap-2">
+          <Loader2 size={14} className="animate-spin" /> Scanning curated universes…
+        </div>
+      ) : q.error ? (
+        <EmptyState title="Could not scan">{(q.error as Error).message}</EmptyState>
+      ) : data ? (
+        <div className="space-y-4">
+          {markets.length === 0 && (
+            <EmptyState title="Nothing to surface yet">
+              The scan returned no Buy-rated names outside your portfolio for the
+              chosen markets. Try clicking Rescan after the next session.
+            </EmptyState>
+          )}
+          {markets.map((mkt) => (
+            <DiscoverMarketBlock
+              key={mkt}
+              market={mkt}
+              rows={data.by_market[mkt]}
+              universeSize={data.universe_sizes[mkt] ?? 0}
+            />
+          ))}
+        </div>
+      ) : null}
+
+      {data?.note && (
+        <div className="text-[11px] text-zinc-400 leading-relaxed">{data.note}</div>
+      )}
+    </section>
+  );
+}
+
+function DiscoverMarketBlock({
+  market,
+  rows,
+  universeSize,
+}: {
+  market: string;
+  rows: DiscoveryRow[];
+  universeSize: number;
+}) {
+  return (
+    <div className="card overflow-hidden">
+      <div className="flex items-baseline justify-between px-4 py-2 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40">
+        <div className="text-sm font-semibold uppercase tracking-wider">{market}</div>
+        <div className="text-[11px] text-zinc-500">
+          {rows.length} of {universeSize} scored ≥ Buy
+        </div>
+      </div>
+      {rows.length === 0 ? (
+        <div className="p-4 text-xs text-zinc-500">
+          No Buy-rated names in this market right now.
+        </div>
+      ) : (
+        <table className="w-full text-xs">
+          <thead className="text-zinc-500 uppercase tracking-wider text-[10px]">
+            <tr>
+              <th className="text-left px-3 py-2">Ticker</th>
+              <th className="text-right px-2 py-2">Price</th>
+              <th className="text-right px-2 py-2">Day</th>
+              <th className="text-left px-2 py-2">Signal</th>
+              <th className="text-right px-2 py-2">RSI</th>
+              <th className="text-left px-2 py-2">Trend</th>
+              <th className="text-left px-2 py-2">Rules</th>
+              <th className="text-left px-2 py-2">News</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={`${r.symbol}.${r.market}`} className="border-t border-zinc-200 dark:border-zinc-800">
+                <td className="px-3 py-1.5">
+                  <span className="font-semibold">{r.symbol}</span>
+                </td>
+                <td className="px-2 py-1.5 text-right tabular-nums font-mono">
+                  {r.price != null ? `${r.currency_symbol}${r.price.toFixed(2)}` : "—"}
+                </td>
+                <td
+                  className={`px-2 py-1.5 text-right tabular-nums ${
+                    (r.change_pct ?? 0) > 0
+                      ? "text-bull-500"
+                      : (r.change_pct ?? 0) < 0
+                      ? "text-bear-500"
+                      : "text-zinc-500"
+                  }`}
+                >
+                  {r.change_pct != null ? fmtPct(r.change_pct, 1) : "—"}
+                </td>
+                <td className="px-2 py-1.5">
+                  <SignalPill label={r.score_label} score={r.score_value} compact />
+                </td>
+                <td className="px-2 py-1.5 text-right tabular-nums">
+                  {r.rsi != null ? r.rsi.toFixed(0) : "—"}
+                </td>
+                <td className="px-2 py-1.5 text-zinc-600 dark:text-zinc-400">
+                  {r.trend ?? "—"}
+                </td>
+                <td className="px-2 py-1.5 text-zinc-500">
+                  {r.rule_count > 0 ? r.rule_names.slice(0, 2).join(" · ") : "—"}
+                </td>
+                <td className="px-2 py-1.5 text-zinc-500">
+                  {r.sentiment_label ?? "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function sumValues(obj: Record<string, number>): number {
+  return Object.values(obj).reduce((a, b) => a + b, 0);
 }
 
 // --- Market pulse ---
