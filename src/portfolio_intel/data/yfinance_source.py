@@ -91,14 +91,20 @@ class YFinanceSource(DataSource):
         {(symbol_upper, market_code): Quote} map; missing tickers are omitted.
 
         Strategy:
-          1. Try a single bulk yf.download() — fast happy path.
-          2. For every ticker that came back missing or with no close,
-             fall back to a per-ticker fast_info call. yf.download is
-             flaky with mixed exchanges (Indian + US) and can return an
-             empty MultiIndex for valid symbols.
+          1. Single bulk yf.download() — one HTTP round trip for all tickers.
+             During market hours the "today" daily-close row updates with
+             the current quote within the session, so this gives us live
+             prices without per-ticker calls.
+          2. For tickers the bulk call missed (Yahoo throttles, exchange
+             quirks, etc.) — fall back to per-ticker fast_info, capped at
+             a small batch so the whole call stays well under the poll
+             interval.
 
-        Prefers fast_info's last_price (which reflects the regular-session
-        last trade — moves intraday) over the daily-close snapshot.
+        A previous version called fast_info for every open-market ticker
+        on top of the bulk; that turns one HTTP call into N and easily
+        runs past the 30s poll interval with a few dozen holdings — which
+        is exactly why the dashboard's "live · 1m ago" timestamp got
+        stuck.
         """
         import yfinance as yf
 
@@ -153,11 +159,10 @@ class YFinanceSource(DataSource):
                 stale=_market_is_likely_closed(market, as_of),
             )
 
-        # Per-ticker fallback for whatever bulk missed. fast_info is also
-        # what gives us a live last-trade price during market hours; the
-        # bulk daily-close path only updates at end-of-day, which is the
-        # other half of why "autorefresh wasn't happening".
-        for qualified in missing:
+        # Per-ticker fallback ONLY for what bulk genuinely missed. Capped so
+        # a wave of misses can't blow the budget.
+        _FALLBACK_CAP = 10
+        for qualified in missing[:_FALLBACK_CAP]:
             key = qualified_to_key[qualified]
             market = market_by_qualified[qualified]
             try:
@@ -175,35 +180,6 @@ class YFinanceSource(DataSource):
                     as_of=as_of,
                     previous_close=prev,
                     stale=_market_is_likely_closed(market, as_of),
-                )
-            except Exception:
-                continue
-
-        # Even when bulk succeeded, fast_info gives the intraday last
-        # trade; for the open markets, refresh those rows from fast_info
-        # so prices actually move between polls (daily-close df is static
-        # within a session).
-        for qualified, key in qualified_to_key.items():
-            market = market_by_qualified[qualified]
-            if _market_is_likely_closed(market, as_of):
-                continue
-            if key not in out:
-                continue
-            try:
-                t = yf.Ticker(qualified)
-                fi = t.fast_info
-                live_px = _coerce_float(getattr(fi, "last_price", None))
-                if live_px is None:
-                    continue
-                existing = out[key]
-                out[key] = Quote(
-                    symbol=existing.symbol,
-                    market_code=existing.market_code,
-                    price=float(live_px),
-                    currency=existing.currency,
-                    as_of=as_of,
-                    previous_close=existing.previous_close,
-                    stale=existing.stale,
                 )
             except Exception:
                 continue
