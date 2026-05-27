@@ -11,6 +11,8 @@ import type {
   HoldingIn,
   ImportResult,
   Insights,
+  CoveredCalls,
+  IVSnapshot,
   LiveQuotes,
   Lookup,
   OptionChain,
@@ -194,6 +196,16 @@ export const api = {
     const params = new URLSearchParams({ symbol, expiry });
     if (brokerCode) params.set("broker_code", brokerCode);
     return request<OptionChain>(`/options/chain?${params.toString()}`);
+  },
+  optionIVSnapshot: (symbol: string, expiry: string, brokerCode?: string) => {
+    const params = new URLSearchParams({ symbol, expiry });
+    if (brokerCode) params.set("broker_code", brokerCode);
+    return request<IVSnapshot>(`/options/iv-snapshot?${params.toString()}`);
+  },
+  optionCoveredCalls: (symbol: string, expiry: string, brokerCode?: string) => {
+    const params = new URLSearchParams({ symbol, expiry });
+    if (brokerCode) params.set("broker_code", brokerCode);
+    return request<CoveredCalls>(`/options/covered-calls?${params.toString()}`);
   },
   optionPayoff: (body: PayoffIn) =>
     request<PayoffOut>("/options/payoff", {

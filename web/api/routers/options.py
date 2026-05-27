@@ -33,8 +33,10 @@ from portfolio_intel.options import (
     bs_price,
     candidate_expiries,
     implied_vol,
+    iv_rv_label,
     next_monthly_expiries,
     next_weekly_expiries,
+    realized_volatility,
     years_to_expiry,
 )
 from portfolio_intel.options.pricing import OptionRight
@@ -311,6 +313,160 @@ def chain(
         days_to_expiry=days,
         risk_free_rate=rate,
         rows=rows,
+    )
+
+
+class IVSnapshotOut(BaseModel):
+    underlying_symbol: str
+    underlying_broker_code: str
+    spot: Optional[float] = None
+    expiry: str
+    days_to_expiry: int
+    atm_strike: Optional[float] = None
+    atm_iv: Optional[float] = None           # decimal, 0.22 = 22%
+    realized_vol_30d: Optional[float] = None # decimal, annualised
+    iv_rv_ratio: Optional[float] = None
+    label: str = "n/a"                       # cheap | fair | rich | n/a
+    note: str = (
+        "IV from ATM contract via Black-Scholes inversion. RV = stdev of "
+        "log returns over the last 30 trading days, annualised by sqrt(252). "
+        "Above ~1.2x = implied is rich; below ~0.9x = implied is cheap."
+    )
+
+
+@router.get("/iv-snapshot", response_model=IVSnapshotOut)
+def iv_snapshot(
+    symbol: str = Query(..., description="NSE bare ticker"),
+    expiry: str = Query(..., description="YYYY-MM-DD"),
+    broker_code: Optional[str] = Query(None),
+    rate: float = Query(DEFAULT_RISK_FREE_IN),
+) -> IVSnapshotOut:
+    """ATM implied vol vs 30d realized vol for the underlying."""
+    chain_out = chain(symbol=symbol, expiry=expiry, broker_code=broker_code, rate=rate)
+
+    # Find the ATM strike (closest to spot) and its call IV.
+    atm_strike: Optional[float] = None
+    atm_iv: Optional[float] = None
+    if chain_out.spot is not None and chain_out.rows:
+        # Pick the call closest to spot whose IV solved.
+        calls = [r for r in chain_out.rows if r.right == "call" and r.iv is not None]
+        if calls:
+            best = min(calls, key=lambda r: abs(r.strike - chain_out.spot))
+            atm_strike = best.strike
+            atm_iv = best.iv
+
+    # 30d realized vol from yfinance closes.
+    rv: Optional[float] = None
+    try:
+        bare_symbol, _ = parse_ticker(symbol, default_market=Market.NSE)
+        hist = get_source().get_history(bare_symbol, Market.NSE, period="3mo", interval="1d")
+        if hist is not None and not hist.empty and "close" in hist.columns:
+            rv = realized_volatility(hist["close"], window=30)
+    except Exception:
+        rv = None
+
+    ratio = (atm_iv / rv) if (atm_iv is not None and rv is not None and rv > 0) else None
+
+    return IVSnapshotOut(
+        underlying_symbol=chain_out.underlying_symbol,
+        underlying_broker_code=chain_out.underlying_broker_code,
+        spot=chain_out.spot,
+        expiry=chain_out.expiry,
+        days_to_expiry=chain_out.days_to_expiry,
+        atm_strike=atm_strike,
+        atm_iv=atm_iv,
+        realized_vol_30d=rv,
+        iv_rv_ratio=ratio,
+        label=iv_rv_label(atm_iv, rv),
+    )
+
+
+class CoveredCallRow(BaseModel):
+    strike: float
+    premium: float                    # mid or LTP, whichever the chain has
+    days_to_expiry: int
+    yield_pct: float                  # premium / spot * 100, period yield
+    annualized_pct: float             # yield_pct scaled to 365d
+    moneyness_pct: float              # (strike - spot) / spot * 100
+    delta: Optional[float] = None     # assignment-probability proxy
+    open_interest: Optional[float] = None
+    iv: Optional[float] = None
+
+
+class CoveredCallsOut(BaseModel):
+    underlying_symbol: str
+    underlying_broker_code: str
+    spot: Optional[float]
+    expiry: str
+    days_to_expiry: int
+    rows: list[CoveredCallRow]
+    note: str = (
+        "Information only — not a recommendation to write calls. Yield = "
+        "premium / spot for the period. Annualised assumes you keep rolling "
+        "at the same yield (you won't). Δ is a rough proxy for the "
+        "probability of being assigned at expiry."
+    )
+
+
+@router.get("/covered-calls", response_model=CoveredCallsOut)
+def covered_calls(
+    symbol: str = Query(..., description="NSE bare ticker you hold"),
+    expiry: str = Query(..., description="YYYY-MM-DD"),
+    broker_code: Optional[str] = Query(None),
+    rate: float = Query(DEFAULT_RISK_FREE_IN),
+    max_otm_pct: float = Query(15.0, description="Skip strikes more than this % above spot"),
+) -> CoveredCallsOut:
+    """For a stock you hold, list OTM monthly calls with their period
+    yield, annualised yield, and assignment-probability proxy.
+
+    Information only — no ranking by 'best trade', no buy/sell call. The
+    user picks which trade-off (yield vs assignment risk) they want.
+    """
+    chain_out = chain(symbol=symbol, expiry=expiry, broker_code=broker_code, rate=rate)
+
+    spot = chain_out.spot
+    days = chain_out.days_to_expiry
+    out_rows: list[CoveredCallRow] = []
+
+    if spot is not None and spot > 0:
+        for r in chain_out.rows:
+            if r.right != "call":
+                continue
+            if r.strike <= spot:
+                continue  # ITM/ATM — covered calls are usually OTM
+            moneyness = (r.strike - spot) / spot * 100.0
+            if moneyness > max_otm_pct:
+                continue
+            premium = r.ltp if r.ltp is not None else (
+                0.5 * (r.bid + r.ask) if (r.bid and r.ask and r.bid > 0 and r.ask > 0) else None
+            )
+            if premium is None or premium <= 0:
+                continue
+            yield_pct = premium / spot * 100.0
+            annualised = (yield_pct / max(days, 1)) * 365.0
+            out_rows.append(CoveredCallRow(
+                strike=r.strike,
+                premium=round(premium, 2),
+                days_to_expiry=days,
+                yield_pct=round(yield_pct, 3),
+                annualized_pct=round(annualised, 2),
+                moneyness_pct=round(moneyness, 2),
+                delta=r.delta,
+                open_interest=r.open_interest,
+                iv=r.iv,
+            ))
+
+    # Sort by yield_pct descending — highest income at top. User compares
+    # against the Δ column to weigh assignment risk.
+    out_rows.sort(key=lambda x: x.yield_pct, reverse=True)
+
+    return CoveredCallsOut(
+        underlying_symbol=chain_out.underlying_symbol,
+        underlying_broker_code=chain_out.underlying_broker_code,
+        spot=spot,
+        expiry=chain_out.expiry,
+        days_to_expiry=days,
+        rows=out_rows,
     )
 
 

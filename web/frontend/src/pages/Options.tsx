@@ -1,4 +1,11 @@
-import { Calculator, ChevronRight, Loader2, Plus, Trash2 } from "lucide-react";
+import {
+  Calculator,
+  ChevronRight,
+  Loader2,
+  Plus,
+  Sparkles,
+  Trash2,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -18,6 +25,15 @@ import { TickerCombo } from "../components/TickerCombo";
 import type { OptionRow, PayoffLeg } from "../types";
 
 export function OptionsPage() {
+  // Lift state so IV panel + covered-calls section can react to the chain's
+  // chosen symbol/expiry without forcing the user to re-enter them.
+  const [symbol, setSymbol] = useState("RELIANCE");
+  const [brokerCode, setBrokerCode] = useState("");
+  const [expiry, setExpiry] = useState<string>("");
+
+  // Template legs the user has clicked. Consumed by PayoffSection.
+  const [templateLegs, setTemplateLegs] = useState<TemplateLegs | null>(null);
+
   return (
     <div className="space-y-10 pb-12">
       <header className="space-y-1">
@@ -28,18 +44,44 @@ export function OptionsPage() {
         </p>
       </header>
 
-      <ChainSection />
-      <PayoffSection />
+      <ChainSection
+        symbol={symbol}
+        setSymbol={setSymbol}
+        brokerCode={brokerCode}
+        setBrokerCode={setBrokerCode}
+        expiry={expiry}
+        setExpiry={setExpiry}
+      />
+      <IVPanel symbol={symbol} brokerCode={brokerCode} expiry={expiry} />
+      <CoveredCallsSection
+        symbol={symbol}
+        brokerCode={brokerCode}
+        expiry={expiry}
+      />
+      <PayoffSection initialLegs={templateLegs} onTemplate={setTemplateLegs} />
     </div>
   );
 }
 
 // ---- Chain ----
 
-function ChainSection() {
-  const [symbol, setSymbol] = useState("RELIANCE");
-  const [brokerCode, setBrokerCode] = useState("");
-  const [expiry, setExpiry] = useState<string>("");
+interface ChainProps {
+  symbol: string;
+  setSymbol: (v: string) => void;
+  brokerCode: string;
+  setBrokerCode: (v: string) => void;
+  expiry: string;
+  setExpiry: (v: string) => void;
+}
+
+function ChainSection({
+  symbol,
+  setSymbol,
+  brokerCode,
+  setBrokerCode,
+  expiry,
+  setExpiry,
+}: ChainProps) {
 
   // Verified per-symbol expiries (asks Breeze which last-week dates actually
   // have contracts). Falls back to the calendar list if probe hasn't run /
@@ -248,6 +290,197 @@ function ChainSection() {
   );
 }
 
+// ---- IV vs RV panel ----
+
+function IVPanel({
+  symbol,
+  brokerCode,
+  expiry,
+}: {
+  symbol: string;
+  brokerCode: string;
+  expiry: string;
+}) {
+  const snap = useQuery({
+    queryKey: ["iv-snapshot", symbol.trim().toUpperCase(), brokerCode.trim().toUpperCase(), expiry],
+    queryFn: () => api.optionIVSnapshot(symbol.trim(), expiry, brokerCode.trim() || undefined),
+    enabled: !!symbol.trim() && !!expiry,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
+  if (!symbol.trim() || !expiry) return null;
+
+  const data = snap.data;
+  const labelColor =
+    data?.label === "rich"
+      ? "text-bear-500"
+      : data?.label === "cheap"
+      ? "text-bull-500"
+      : data?.label === "fair"
+      ? "text-zinc-500"
+      : "text-zinc-400";
+
+  return (
+    <section className="space-y-2">
+      <div className="flex items-baseline gap-2">
+        <h2 className="text-base font-bold">IV vs realised vol</h2>
+        <span className="text-xs text-zinc-500">
+          single highest-information options datapoint
+        </span>
+      </div>
+      <div className="card p-4">
+        {snap.isFetching && !data ? (
+          <div className="text-sm text-zinc-500 flex items-center gap-2">
+            <Loader2 size={14} className="animate-spin" /> Loading…
+          </div>
+        ) : snap.error ? (
+          <div className="text-sm text-bear-500">{(snap.error as Error).message}</div>
+        ) : data ? (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <Stat
+              label="ATM IV"
+              v={data.atm_iv != null ? data.atm_iv * 100 : null}
+              suffix="%"
+              subtitle={data.atm_strike != null ? `strike ₹${data.atm_strike}` : undefined}
+              tone="neutral"
+            />
+            <Stat
+              label="Realised vol (30d)"
+              v={data.realized_vol_30d != null ? data.realized_vol_30d * 100 : null}
+              suffix="%"
+              subtitle="annualised"
+              tone="neutral"
+            />
+            <Stat
+              label="IV ÷ RV"
+              v={data.iv_rv_ratio}
+              subtitle={data.iv_rv_ratio != null ? "ratio" : "—"}
+              tone="neutral"
+            />
+            <div className="rounded-md border border-zinc-200 dark:border-zinc-800 p-3">
+              <div className="text-[11px] text-zinc-500 uppercase tracking-wider">
+                Verdict
+              </div>
+              <div className={`text-lg font-semibold uppercase ${labelColor}`}>
+                {data.label}
+              </div>
+              <div className="text-xs text-zinc-500 mt-0.5">
+                {data.label === "rich" && "options pricing in more move than the stock has shown"}
+                {data.label === "cheap" && "options pricing in less move than the stock has shown"}
+                {data.label === "fair" && "implied and realised roughly in line"}
+                {data.label === "n/a" && "not enough data"}
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {data && (
+          <div className="text-[11px] text-zinc-400 mt-3 leading-relaxed">
+            {data.note}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// ---- Covered calls ----
+
+function CoveredCallsSection({
+  symbol,
+  brokerCode,
+  expiry,
+}: {
+  symbol: string;
+  brokerCode: string;
+  expiry: string;
+}) {
+  const cc = useQuery({
+    queryKey: ["covered-calls", symbol.trim().toUpperCase(), brokerCode.trim().toUpperCase(), expiry],
+    queryFn: () => api.optionCoveredCalls(symbol.trim(), expiry, brokerCode.trim() || undefined),
+    enabled: !!symbol.trim() && !!expiry,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
+  if (!symbol.trim() || !expiry) return null;
+
+  return (
+    <section className="space-y-2">
+      <div className="flex items-baseline gap-2">
+        <h2 className="text-base font-bold">Covered-call yield finder</h2>
+        <span className="text-xs text-zinc-500">
+          if you hold {symbol.toUpperCase()}: monthly premium per strike
+        </span>
+      </div>
+      <div className="card overflow-x-auto">
+        {cc.isFetching && !cc.data ? (
+          <div className="p-4 text-sm text-zinc-500 flex items-center gap-2">
+            <Loader2 size={14} className="animate-spin" /> Loading…
+          </div>
+        ) : cc.error ? (
+          <div className="p-4 text-sm text-bear-500">{(cc.error as Error).message}</div>
+        ) : cc.data && cc.data.rows.length === 0 ? (
+          <div className="p-4 text-sm text-zinc-500">
+            No OTM calls within 15% of spot for this expiry.
+          </div>
+        ) : cc.data ? (
+          <table className="w-full text-xs">
+            <thead className="bg-zinc-50 dark:bg-zinc-900/50 text-zinc-500 uppercase tracking-wider text-[10px]">
+              <tr>
+                <th className="text-right px-3 py-2">Strike</th>
+                <th className="text-right px-3 py-2">vs spot</th>
+                <th className="text-right px-3 py-2">Premium</th>
+                <th className="text-right px-3 py-2">Yield</th>
+                <th className="text-right px-3 py-2">Annualised</th>
+                <th className="text-right px-3 py-2" title="Rough probability of being assigned at expiry">
+                  Δ (assign %)
+                </th>
+                <th className="text-right px-3 py-2">IV</th>
+                <th className="text-right px-3 py-2">OI</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cc.data.rows.map((r) => (
+                <tr
+                  key={r.strike}
+                  className="border-t border-zinc-200 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-900/40"
+                >
+                  <td className="px-3 py-1.5 text-right font-mono font-semibold">{r.strike}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums text-zinc-500">
+                    +{r.moneyness_pct.toFixed(1)}%
+                  </td>
+                  <td className="px-3 py-1.5 text-right tabular-nums font-mono">{r.premium.toFixed(2)}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-bull-600">
+                    {r.yield_pct.toFixed(2)}%
+                  </td>
+                  <td className="px-3 py-1.5 text-right tabular-nums text-bull-500">
+                    {r.annualized_pct.toFixed(0)}%
+                  </td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">
+                    {r.delta != null ? `${(r.delta * 100).toFixed(0)}%` : "—"}
+                  </td>
+                  <td className="px-3 py-1.5 text-right tabular-nums text-zinc-500">
+                    {r.iv != null ? `${(r.iv * 100).toFixed(1)}%` : "—"}
+                  </td>
+                  <td className="px-3 py-1.5 text-right tabular-nums text-zinc-500">
+                    {r.open_interest != null ? Math.round(r.open_interest).toLocaleString() : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : null}
+        {cc.data && (
+          <div className="px-4 py-2 text-[11px] text-zinc-400 border-t border-zinc-200 dark:border-zinc-800">
+            {cc.data.note}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function groupByStrike(rows: OptionRow[]) {
   const map = new Map<number, { strike: number; call?: OptionRow; put?: OptionRow }>();
   for (const r of rows) {
@@ -319,14 +552,127 @@ interface LegInput {
   premium: string;
 }
 
+interface TemplateLegSpec {
+  qty: number;
+  right: "call" | "put";
+  strikeOffset: number; // strike = spot + offset
+  premium: number;
+}
+
+export interface TemplateLegs {
+  name: string;
+  legs: TemplateLegSpec[];
+  spotHint?: number;
+}
+
+const TEMPLATES: { label: string; build: (spot: number) => TemplateLegs }[] = [
+  {
+    label: "Long call",
+    build: (s) => ({ name: "Long call", legs: [{ qty: 1, right: "call", strikeOffset: 0, premium: 3 }] }),
+  },
+  {
+    label: "Long put",
+    build: (s) => ({ name: "Long put", legs: [{ qty: 1, right: "put", strikeOffset: 0, premium: 3 }] }),
+  },
+  {
+    label: "Bull call spread",
+    build: (s) => ({
+      name: "Bull call spread",
+      legs: [
+        { qty: 1, right: "call", strikeOffset: 0, premium: 3 },
+        { qty: -1, right: "call", strikeOffset: Math.max(1, s * 0.05), premium: 1.5 },
+      ],
+    }),
+  },
+  {
+    label: "Bear put spread",
+    build: (s) => ({
+      name: "Bear put spread",
+      legs: [
+        { qty: 1, right: "put", strikeOffset: 0, premium: 3 },
+        { qty: -1, right: "put", strikeOffset: -Math.max(1, s * 0.05), premium: 1.5 },
+      ],
+    }),
+  },
+  {
+    label: "Long straddle",
+    build: (s) => ({
+      name: "Long straddle",
+      legs: [
+        { qty: 1, right: "call", strikeOffset: 0, premium: 3 },
+        { qty: 1, right: "put", strikeOffset: 0, premium: 3 },
+      ],
+    }),
+  },
+  {
+    label: "Long strangle",
+    build: (s) => ({
+      name: "Long strangle",
+      legs: [
+        { qty: 1, right: "call", strikeOffset: Math.max(1, s * 0.05), premium: 2 },
+        { qty: 1, right: "put", strikeOffset: -Math.max(1, s * 0.05), premium: 2 },
+      ],
+    }),
+  },
+  {
+    label: "Iron condor",
+    build: (s) => ({
+      name: "Iron condor",
+      legs: [
+        { qty: 1, right: "put", strikeOffset: -Math.max(2, s * 0.1), premium: 1 },
+        { qty: -1, right: "put", strikeOffset: -Math.max(1, s * 0.05), premium: 2 },
+        { qty: -1, right: "call", strikeOffset: Math.max(1, s * 0.05), premium: 2 },
+        { qty: 1, right: "call", strikeOffset: Math.max(2, s * 0.1), premium: 1 },
+      ],
+    }),
+  },
+  {
+    label: "Covered call",
+    build: (s) => ({
+      name: "Covered call (short call only — pair with held stock)",
+      legs: [{ qty: -1, right: "call", strikeOffset: Math.max(1, s * 0.05), premium: 2 }],
+    }),
+  },
+  {
+    label: "Protective put",
+    build: (s) => ({
+      name: "Protective put (long put only — pair with held stock)",
+      legs: [{ qty: 1, right: "put", strikeOffset: -Math.max(1, s * 0.05), premium: 3 }],
+    }),
+  },
+];
+
 let _nextId = 1;
 
-function PayoffSection() {
+function PayoffSection({
+  initialLegs,
+  onTemplate,
+}: {
+  initialLegs?: TemplateLegs | null;
+  onTemplate?: (t: TemplateLegs | null) => void;
+}) {
   const [spot, setSpot] = useState("100");
   const [lotSize, setLotSize] = useState("1");
   const [legs, setLegs] = useState<LegInput[]>([
     { id: _nextId++, qty: "1", right: "call", strike: "100", premium: "2.5" },
   ]);
+
+  // When a template is selected upstream, materialise it into the legs.
+  useEffect(() => {
+    if (!initialLegs) return;
+    const s = parseFloat(spot) || 100;
+    setLegs(
+      initialLegs.legs.map((t) => ({
+        id: _nextId++,
+        qty: String(t.qty),
+        right: t.right,
+        strike: String(Math.round((s + t.strikeOffset) * 100) / 100),
+        premium: String(t.premium),
+      })),
+    );
+    // Clear so re-clicking the same template still fires.
+    onTemplate?.(null);
+  }, [initialLegs, spot, onTemplate]);
 
   const compute = useMutation({
     mutationFn: () => {
@@ -383,6 +729,30 @@ function PayoffSection() {
               value={lotSize}
               onChange={(e) => setLotSize(e.target.value)}
             />
+          </div>
+        </div>
+
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <Sparkles size={12} className="text-zinc-500" />
+            <span className="text-[11px] text-zinc-500 uppercase tracking-wider">
+              Strategy templates
+            </span>
+            <span className="text-[10px] text-zinc-400">
+              click to fill legs · edit strikes/premiums after
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {TEMPLATES.map((t) => (
+              <button
+                key={t.label}
+                type="button"
+                className="pill text-[11px] bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+                onClick={() => onTemplate?.(t.build(parseFloat(spot) || 100))}
+              >
+                {t.label}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -554,11 +924,13 @@ function Stat({
   v,
   subtitle,
   tone,
+  suffix,
 }: {
   label: string;
   v: number | null;
   subtitle?: string;
   tone: "bull" | "bear" | "neutral";
+  suffix?: string;
 }) {
   const cls =
     tone === "bull"
@@ -572,6 +944,7 @@ function Stat({
       {v != null && (
         <div className={`text-lg font-mono font-semibold ${cls}`}>
           {v.toFixed(2)}
+          {suffix && <span className="text-xs text-zinc-500 ml-0.5">{suffix}</span>}
         </div>
       )}
       {subtitle && <div className="text-xs text-zinc-500 mt-0.5">{subtitle}</div>}

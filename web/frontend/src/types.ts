@@ -287,6 +287,42 @@ export interface LiveQuotes {
   cached: boolean;
 }
 
+export interface IVSnapshot {
+  underlying_symbol: string;
+  underlying_broker_code: string;
+  spot: number | null;
+  expiry: string;
+  days_to_expiry: number;
+  atm_strike: number | null;
+  atm_iv: number | null;
+  realized_vol_30d: number | null;
+  iv_rv_ratio: number | null;
+  label: string; // cheap | fair | rich | n/a
+  note: string;
+}
+
+export interface CoveredCallRow {
+  strike: number;
+  premium: number;
+  days_to_expiry: number;
+  yield_pct: number;
+  annualized_pct: number;
+  moneyness_pct: number;
+  delta: number | null;
+  open_interest: number | null;
+  iv: number | null;
+}
+
+export interface CoveredCalls {
+  underlying_symbol: string;
+  underlying_broker_code: string;
+  spot: number | null;
+  expiry: string;
+  days_to_expiry: number;
+  rows: CoveredCallRow[];
+  note: string;
+}
+
 export interface OptionExpiriesProbe {
   underlying_symbol: string;
   underlying_broker_code: string;

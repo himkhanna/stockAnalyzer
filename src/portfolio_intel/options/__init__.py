@@ -18,6 +18,7 @@ from .pricing import (
     implied_vol,
     years_to_expiry,
 )
+from .stats import iv_rv_label, realized_volatility
 
 __all__ = [
     "DEFAULT_DIVIDEND_YIELD",
@@ -28,7 +29,9 @@ __all__ = [
     "implied_vol",
     "years_to_expiry",
     "candidate_expiries",
+    "iv_rv_label",
     "last_thursday_of_month",
     "next_monthly_expiries",
     "next_weekly_expiries",
+    "realized_volatility",
 ]
