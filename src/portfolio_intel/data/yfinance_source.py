@@ -300,17 +300,37 @@ def is_market_open(market: Market, now_utc: Optional[datetime] = None) -> bool:
 def _market_is_likely_closed(market: Market, now_utc: datetime) -> bool:
     """Cheap heuristic so quotes can be labeled 'stale' when shown outside
     trading hours. Not a holiday-aware calendar — intentional: this is a
-    label, not a trading gate. A real calendar comes later if needed."""
+    label, not a trading gate. A real calendar comes later if needed.
+
+    Weekend logic is market-specific: US/India follow Sat-Sun off; UAE
+    markets trade Sun-Thu and are closed Fri-Sat.
+    """
     try:
         from zoneinfo import ZoneInfo
     except ImportError:
         return False
     local = now_utc.astimezone(ZoneInfo(market.timezone))
-    if local.weekday() >= 5:
-        return True
+    wd = local.weekday()  # Mon=0 ... Sun=6
     minutes = local.hour * 60 + local.minute
+
     if market is Market.US:
+        if wd >= 5:  # Sat (5), Sun (6) — closed
+            return True
         return not (9 * 60 + 30 <= minutes <= 16 * 60)
+
     if market in (Market.NSE, Market.BSE):
+        if wd >= 5:  # Sat, Sun — closed
+            return True
         return not (9 * 60 + 15 <= minutes <= 15 * 60 + 30)
-    return False
+
+    if market in (Market.DFM, Market.ADX):
+        # UAE markets: trading week is Sun-Thu (wd 6, 0, 1, 2, 3).
+        # Closed Fri (4) and Sat (5).
+        if wd in (4, 5):
+            return True
+        # DFM/ADX: ~10:00-15:00 Gulf Standard Time (UTC+4).
+        return not (10 * 60 <= minutes <= 15 * 60)
+
+    # Unknown market — treat as closed to be conservative. Better to
+    # under-poll than show "live" for a market we have no rules for.
+    return True
