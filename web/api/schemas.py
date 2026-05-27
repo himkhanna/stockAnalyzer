@@ -308,6 +308,33 @@ class DiversificationOut(BaseModel):
     )
 
 
+class HarvestCandidateOut(BaseModel):
+    ticker: str
+    market: str
+    currency_symbol: str
+    shares: float
+    cost_basis: float
+    price: float
+    unrealised_loss: float        # negative
+    loss_pct: float               # negative
+    days_held: int
+    term: str                     # "short" | "long"
+    tax_rate: float               # decimal
+    est_tax_saving: float
+    notes: list[str] = []
+
+
+class TaxHarvestOut(BaseModel):
+    candidates: list[HarvestCandidateOut]
+    total_saving_by_currency: dict[str, float]
+    note: str = (
+        "Estimated saving = |loss| × bucket rate. India equity: STCG 15%, "
+        "LTCG 12.5% (LTCG estimate assumes you're above the ₹1.25L annual "
+        "exempt amount). US equity: STCG ~22%, LTCG 15% defaults. Real "
+        "tax depends on your filing; verify with your accountant."
+    )
+
+
 class InsightsOut(BaseModel):
     conviction: list[ConvictionRow]
     watchlist: list[CardRowOut]

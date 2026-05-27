@@ -16,6 +16,7 @@ import type {
   Discovery,
   DiversificationReport,
   IVSnapshot,
+  TaxHarvest,
   LiveQuotes,
   Lookup,
   OptionChain,
@@ -146,6 +147,8 @@ export const api = {
   getInsights: () => request<Insights>("/insights"),
 
   diversification: () => request<DiversificationReport>("/insights/diversification"),
+
+  taxHarvest: () => request<TaxHarvest>("/insights/tax-harvest"),
 
   discover: (opts: { markets?: string[]; refresh?: boolean; minScore?: number; limitPerMarket?: number } = {}) => {
     const params = new URLSearchParams();

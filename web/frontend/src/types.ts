@@ -340,6 +340,28 @@ export interface DiscoveryRow {
   error: string | null;
 }
 
+export interface HarvestCandidate {
+  ticker: string;
+  market: string;
+  currency_symbol: string;
+  shares: number;
+  cost_basis: number;
+  price: number;
+  unrealised_loss: number;
+  loss_pct: number;
+  days_held: number;
+  term: "short" | "long";
+  tax_rate: number;
+  est_tax_saving: number;
+  notes: string[];
+}
+
+export interface TaxHarvest {
+  candidates: HarvestCandidate[];
+  total_saving_by_currency: Record<string, number>;
+  note: string;
+}
+
 export interface AssetSlice {
   asset_class: string;
   market_value: number;

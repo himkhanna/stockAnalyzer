@@ -61,6 +61,7 @@ export function InsightsPage() {
       </header>
 
       <AlertsSection />
+      <TaxHarvestSection />
       <DiversificationSection />
       <DiscoverSection />
       <MarketPulse indices={d.indices} />
@@ -70,6 +71,127 @@ export function InsightsPage() {
       <EarningsPanel items={d.upcoming_earnings} />
       <RiskView risk={d.risk} />
     </div>
+  );
+}
+
+// --- Tax-loss harvesting ---
+
+function TaxHarvestSection() {
+  const q = useQuery({
+    queryKey: ["tax-harvest"],
+    queryFn: api.taxHarvest,
+    staleTime: 60 * 1000,
+    retry: false,
+  });
+
+  const totalBySym = q.data?.total_saving_by_currency ?? {};
+  const totalLine = Object.entries(totalBySym)
+    .filter(([, v]) => v > 0)
+    .map(([sym, v]) => `${sym}${Math.round(v).toLocaleString()}`)
+    .join(" · ");
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-baseline justify-between gap-2 flex-wrap">
+        <h2 className="text-base font-bold flex items-center gap-2">
+          <TrendingDown size={16} className="text-bear-500" />
+          Tax-loss harvesting
+        </h2>
+        <div className="text-xs text-zinc-500">
+          {totalLine && (
+            <span>
+              total est. saving:{" "}
+              <span className="font-semibold text-bull-600">{totalLine}</span>
+            </span>
+          )}
+        </div>
+      </div>
+
+      {q.isLoading ? (
+        <div className="card p-4 text-sm text-zinc-500 flex items-center gap-2">
+          <Loader2 size={14} className="animate-spin" /> Loading…
+        </div>
+      ) : q.error ? (
+        <EmptyState title="Could not compute">{(q.error as Error).message}</EmptyState>
+      ) : q.data && q.data.candidates.length === 0 ? (
+        <div className="card p-4 text-xs text-zinc-500">
+          No holdings are currently in the red beyond the noise threshold. Nothing
+          to harvest right now.
+        </div>
+      ) : q.data ? (
+        <div className="card overflow-hidden">
+          <table className="w-full text-xs">
+            <thead className="text-zinc-500 uppercase tracking-wider text-[10px]">
+              <tr>
+                <th className="text-left px-3 py-2">Ticker</th>
+                <th className="text-right px-2 py-2">Shares</th>
+                <th className="text-right px-2 py-2">Cost</th>
+                <th className="text-right px-2 py-2">Price</th>
+                <th className="text-right px-2 py-2">Loss</th>
+                <th className="text-right px-2 py-2">Loss %</th>
+                <th className="text-left px-2 py-2">Held</th>
+                <th className="text-left px-2 py-2">Term</th>
+                <th className="text-right px-2 py-2">Est. saving</th>
+              </tr>
+            </thead>
+            <tbody>
+              {q.data.candidates.map((c) => (
+                <tr key={`${c.ticker}.${c.market}`} className="border-t border-zinc-200 dark:border-zinc-800 align-top">
+                  <td className="px-3 py-1.5">
+                    <div className="font-semibold">{c.ticker}</div>
+                    <div className="text-[10px] text-zinc-500 uppercase">{c.market}</div>
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">{c.shares}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">
+                    {c.currency_symbol}{c.cost_basis.toFixed(2)}
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">
+                    {c.currency_symbol}{c.price.toFixed(2)}
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums text-bear-600 font-semibold">
+                    {c.currency_symbol}{c.unrealised_loss.toFixed(0)}
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums text-bear-500">
+                    {c.loss_pct.toFixed(1)}%
+                  </td>
+                  <td className="px-2 py-1.5 text-zinc-500">{c.days_held}d</td>
+                  <td className="px-2 py-1.5">
+                    <span
+                      className={`pill text-[10px] ${
+                        c.term === "long"
+                          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
+                          : "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                      }`}
+                      title={`${(c.tax_rate * 100).toFixed(1)}% rate`}
+                    >
+                      {c.term === "long" ? "LTCG" : "STCG"}
+                    </span>
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums font-semibold text-bull-600">
+                    {c.currency_symbol}{c.est_tax_saving.toFixed(0)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="px-4 py-2 text-[11px] text-zinc-400 border-t border-zinc-200 dark:border-zinc-800">
+            {q.data.note}
+          </div>
+          {q.data.candidates.some((c) => c.notes.length > 0) && (
+            <div className="px-4 py-2 text-[11px] text-zinc-500 border-t border-zinc-200 dark:border-zinc-800 space-y-1">
+              {q.data.candidates
+                .filter((c) => c.notes.length > 0)
+                .map((c) => (
+                  <div key={c.ticker}>
+                    <span className="font-semibold">{c.ticker}:</span>{" "}
+                    {c.notes.join(" · ")}
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
+      ) : null}
+    </section>
   );
 }
 

@@ -24,6 +24,7 @@ from portfolio_intel.discovery import (
     universe_for,
 )
 from portfolio_intel.markets import INDICES, Market
+from portfolio_intel.portfolio.tax import find_harvest_candidates
 
 from ..schemas import (
     AssetSliceOut,
@@ -35,11 +36,13 @@ from ..schemas import (
     DiversificationInstrumentOut,
     DiversificationOut,
     EarningsItem,
+    HarvestCandidateOut,
     IndexSnapshot,
     InsightsOut,
     RiskPanel,
     RiskTopWeight,
     SignalChange,
+    TaxHarvestOut,
 )
 from ..serializers import card_row_to_out
 from ..state import build_card_for, get_dashboard, get_source, get_store
@@ -505,4 +508,69 @@ def diversification() -> DiversificationOut:
             ]
             for cls, instruments in div.suggestions.items()
         },
+    )
+
+
+# --- Tax-loss harvesting ---
+
+
+@router.get("/tax-harvest", response_model=TaxHarvestOut)
+def tax_harvest() -> TaxHarvestOut:
+    """Surface holdings currently in the red where realising the loss
+    would offset capital gains. Pure math; rates are configurable
+    defaults — verify with your accountant before acting."""
+    payload = get_dashboard()
+    rows = payload["rows"]
+
+    store = get_store()
+    by_key = {(h.ticker.upper(), h.market_code.upper()): h for h in store.all()}
+    currency_symbols: dict[str, str] = {}
+
+    # Build (holding, market_value, price) tuples.
+    items = []
+    for r in rows:
+        c = r.card
+        if c.get("error"):
+            continue
+        sym = (c.get("symbol") or "").upper()
+        mkt = (c.get("market_code") or "").upper()
+        h = by_key.get((sym, mkt))
+        if h is None:
+            continue
+        price = c.get("price")
+        if price is None or r.market_value is None:
+            continue
+        items.append((h, float(r.market_value), float(price)))
+        # collect currency symbols for display
+        sym_char = c.get("currency_symbol") or h.currency
+        currency_symbols[h.currency] = sym_char
+
+    candidates = find_harvest_candidates(items, currency_symbols=currency_symbols)
+
+    # Sum savings per currency (we don't FX-convert; same rule as the
+    # rest of the app).
+    totals: dict[str, float] = {}
+    for c in candidates:
+        totals[c.currency_symbol] = totals.get(c.currency_symbol, 0.0) + c.est_tax_saving
+
+    return TaxHarvestOut(
+        candidates=[
+            HarvestCandidateOut(
+                ticker=c.ticker,
+                market=c.market,
+                currency_symbol=c.currency_symbol,
+                shares=c.shares,
+                cost_basis=round(c.cost_basis, 2),
+                price=round(c.price, 2),
+                unrealised_loss=round(c.unrealised_loss, 2),
+                loss_pct=round(c.loss_pct, 2),
+                days_held=c.days_held,
+                term=c.term,
+                tax_rate=c.tax_rate,
+                est_tax_saving=round(c.est_tax_saving, 2),
+                notes=c.notes,
+            )
+            for c in candidates
+        ],
+        total_saving_by_currency={k: round(v, 2) for k, v in totals.items()},
     )
