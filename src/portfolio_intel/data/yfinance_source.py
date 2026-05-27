@@ -87,23 +87,24 @@ class YFinanceSource(DataSource):
         )
 
     def get_quotes_bulk(self, items: list[tuple[str, Market]]) -> dict[tuple[str, str], Quote]:
-        """Fetch many quotes in a single Yahoo call (price + prev close only).
+        """Fetch many quotes for the live-tile path. Returns a
+        {(symbol_upper, market_code): Quote} map; missing tickers are omitted.
 
-        Used by the live-quote refresh path on the home page. Returns a
-        {(symbol_upper, market_code): Quote} map. Tickers Yahoo can't price
-        are silently omitted — callers fall back to whatever they had.
+        Strategy:
+          1. Try a single bulk yf.download() — fast happy path.
+          2. For every ticker that came back missing or with no close,
+             fall back to a per-ticker fast_info call. yf.download is
+             flaky with mixed exchanges (Indian + US) and can return an
+             empty MultiIndex for valid symbols.
 
-        Trade-off vs get_quote: no fast_info, no .info — we just take the
-        last two daily closes and call the second-to-last the previous
-        close. That's accurate enough for an intraday "live" tile.
+        Prefers fast_info's last_price (which reflects the regular-session
+        last trade — moves intraday) over the daily-close snapshot.
         """
         import yfinance as yf
 
         if not items:
             return {}
 
-        # Build a {qualified -> (symbol, market)} index so we can map the
-        # multi-ticker dataframe rows back to our keys.
         qualified_to_key: dict[str, tuple[str, str]] = {}
         market_by_qualified: dict[str, Market] = {}
         for sym, mkt in items:
@@ -113,6 +114,7 @@ class YFinanceSource(DataSource):
 
         out: dict[tuple[str, str], Quote] = {}
         as_of = datetime.now(timezone.utc)
+        missing: list[str] = []
 
         try:
             df = yf.download(
@@ -125,22 +127,18 @@ class YFinanceSource(DataSource):
                 threads=True,
             )
         except Exception:
-            return {}
-        if df is None or df.empty:
-            return {}
+            df = None
 
-        # When a single ticker is fetched, yfinance returns a flat-columned
-        # DataFrame; when many, columns are a MultiIndex (ticker, field).
         single = len(qualified_to_key) == 1
         for qualified, key in qualified_to_key.items():
-            try:
-                if single:
-                    closes = df["Close"].dropna()
-                else:
-                    closes = df[qualified]["Close"].dropna()
-            except (KeyError, AttributeError):
-                continue
+            closes = None
+            if df is not None and not df.empty:
+                try:
+                    closes = df["Close"].dropna() if single else df[qualified]["Close"].dropna()
+                except (KeyError, AttributeError):
+                    closes = None
             if closes is None or closes.empty:
+                missing.append(qualified)
                 continue
             price = float(closes.iloc[-1])
             prev = float(closes.iloc[-2]) if len(closes) >= 2 else None
@@ -154,6 +152,62 @@ class YFinanceSource(DataSource):
                 previous_close=prev,
                 stale=_market_is_likely_closed(market, as_of),
             )
+
+        # Per-ticker fallback for whatever bulk missed. fast_info is also
+        # what gives us a live last-trade price during market hours; the
+        # bulk daily-close path only updates at end-of-day, which is the
+        # other half of why "autorefresh wasn't happening".
+        for qualified in missing:
+            key = qualified_to_key[qualified]
+            market = market_by_qualified[qualified]
+            try:
+                t = yf.Ticker(qualified)
+                fi = t.fast_info
+                price = _coerce_float(getattr(fi, "last_price", None))
+                prev = _coerce_float(getattr(fi, "previous_close", None))
+                if price is None:
+                    continue
+                out[key] = Quote(
+                    symbol=key[0],
+                    market_code=market.code,
+                    price=float(price),
+                    currency=getattr(fi, "currency", None) or market.currency,
+                    as_of=as_of,
+                    previous_close=prev,
+                    stale=_market_is_likely_closed(market, as_of),
+                )
+            except Exception:
+                continue
+
+        # Even when bulk succeeded, fast_info gives the intraday last
+        # trade; for the open markets, refresh those rows from fast_info
+        # so prices actually move between polls (daily-close df is static
+        # within a session).
+        for qualified, key in qualified_to_key.items():
+            market = market_by_qualified[qualified]
+            if _market_is_likely_closed(market, as_of):
+                continue
+            if key not in out:
+                continue
+            try:
+                t = yf.Ticker(qualified)
+                fi = t.fast_info
+                live_px = _coerce_float(getattr(fi, "last_price", None))
+                if live_px is None:
+                    continue
+                existing = out[key]
+                out[key] = Quote(
+                    symbol=existing.symbol,
+                    market_code=existing.market_code,
+                    price=float(live_px),
+                    currency=existing.currency,
+                    as_of=as_of,
+                    previous_close=existing.previous_close,
+                    stale=existing.stale,
+                )
+            except Exception:
+                continue
+
         return out
 
     def get_history(

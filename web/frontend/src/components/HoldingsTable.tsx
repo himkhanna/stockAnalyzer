@@ -9,7 +9,8 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 
-import { fmtCurrency, fmtPct, SIGNAL_STYLES } from "../lib/format";
+import { fmtCurrency, fmtPct, signalRank, SIGNAL_STYLES } from "../lib/format";
+import type { SortCol, SortState } from "./FilterBar";
 import type { CardRow, LiveQuote } from "../types";
 import { SignalPill } from "./SignalPill";
 import { Sparkline } from "./Sparkline";
@@ -19,6 +20,8 @@ interface Props {
   rows: CardRow[];
   liveByKey: Record<string, LiveQuote | undefined>;
   onOpenDigest: (row: CardRow) => void;
+  sort: SortState;
+  onSort: (s: SortState) => void;
 }
 
 /**
@@ -26,7 +29,7 @@ interface Props {
  * StockCard inline. CLAUDE.md: a 15-stock portfolio should be scannable
  * in ~30 seconds.
  */
-export function HoldingsTable({ rows, liveByKey, onOpenDigest }: Props) {
+export function HoldingsTable({ rows, liveByKey, onOpenDigest, sort, onSort }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const toggle = (key: string) => {
@@ -38,20 +41,39 @@ export function HoldingsTable({ rows, liveByKey, onOpenDigest }: Props) {
     });
   };
 
+  // Click a header: if it's already the sorted column, flip direction.
+  // Otherwise, switch to it with a sensible default direction per column.
+  const clickHeader = (col: SortCol) => {
+    if (sort.col === col) {
+      onSort({ col, dir: sort.dir === "asc" ? "desc" : "asc" });
+    } else {
+      const defaultDir: Record<SortCol, "asc" | "desc"> = {
+        ticker: "asc",
+        price: "desc",
+        day: "desc",
+        signal: "desc",
+        rsi: "desc",
+        weight: "desc",
+        pnl: "desc",
+      };
+      onSort({ col, dir: defaultDir[col] });
+    }
+  };
+
   return (
     <div className="card overflow-hidden">
       <table className="w-full text-sm">
         <thead className="bg-zinc-50 dark:bg-zinc-900/50 text-zinc-500 uppercase tracking-wider text-[10px]">
           <tr>
             <th className="w-6"></th>
-            <th className="text-left px-3 py-2">Ticker</th>
-            <th className="text-right px-2 py-2">Price</th>
-            <th className="text-right px-2 py-2">Day</th>
+            <SortableTh col="ticker" sort={sort} onClick={clickHeader} align="left">Ticker</SortableTh>
+            <SortableTh col="price" sort={sort} onClick={clickHeader} align="right">Price</SortableTh>
+            <SortableTh col="day" sort={sort} onClick={clickHeader} align="right">Day</SortableTh>
             <th className="text-center px-2 py-2">Trend</th>
-            <th className="text-left px-2 py-2">Signal</th>
-            <th className="text-right px-2 py-2">RSI</th>
-            <th className="text-right px-2 py-2">Wt</th>
-            <th className="text-right px-2 py-2">P/L</th>
+            <SortableTh col="signal" sort={sort} onClick={clickHeader} align="left">Signal</SortableTh>
+            <SortableTh col="rsi" sort={sort} onClick={clickHeader} align="right">RSI</SortableTh>
+            <SortableTh col="weight" sort={sort} onClick={clickHeader} align="right">Wt</SortableTh>
+            <SortableTh col="pnl" sort={sort} onClick={clickHeader} align="right">P/L</SortableTh>
             <th className="w-6"></th>
           </tr>
         </thead>
@@ -195,4 +217,71 @@ function HoldingRow({
       )}
     </>
   );
+}
+
+function SortableTh({
+  col,
+  sort,
+  onClick,
+  align,
+  children,
+}: {
+  col: SortCol;
+  sort: SortState;
+  onClick: (c: SortCol) => void;
+  align: "left" | "right" | "center";
+  children: React.ReactNode;
+}) {
+  const active = sort.col === col;
+  const arrow = active ? (sort.dir === "asc" ? "↑" : "↓") : "";
+  return (
+    <th
+      className={clsx(
+        "px-2 py-2 cursor-pointer select-none hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors",
+        align === "left" && "text-left",
+        align === "right" && "text-right",
+        align === "center" && "text-center",
+        active && "text-zinc-900 dark:text-zinc-100",
+      )}
+      onClick={() => onClick(col)}
+    >
+      <span>{children}</span>
+      {arrow && <span className="ml-1">{arrow}</span>}
+    </th>
+  );
+}
+
+/**
+ * Comparator factory used by the dashboard to order rows for the table.
+ * Uses live overlay for price/day when present so re-sorts pick up
+ * fresh data without re-fetching the dashboard.
+ */
+export function makeRowSorter(
+  sort: SortState,
+  liveByKey: Record<string, LiveQuote | undefined>,
+) {
+  const sign = sort.dir === "asc" ? 1 : -1;
+  return (a: CardRow, b: CardRow): number => {
+    const ka = `${a.symbol}.${a.market}`;
+    const kb = `${b.symbol}.${b.market}`;
+    const la = liveByKey[ka];
+    const lb = liveByKey[kb];
+    switch (sort.col) {
+      case "ticker":
+        return sign * a.symbol.localeCompare(b.symbol);
+      case "price":
+        return sign * ((la?.price ?? a.price ?? 0) - (lb?.price ?? b.price ?? 0));
+      case "day":
+        return sign * ((la?.change_pct ?? a.change_pct ?? 0) - (lb?.change_pct ?? b.change_pct ?? 0));
+      case "signal":
+        // signalRank: 0=Strong Sell ... 4=Strong Buy. asc = bearish first.
+        return sign * (signalRank(a.score_label) - signalRank(b.score_label));
+      case "rsi":
+        return sign * ((a.rsi ?? -1) - (b.rsi ?? -1));
+      case "weight":
+        return sign * ((a.weight_pct ?? -1) - (b.weight_pct ?? -1));
+      case "pnl":
+        return sign * ((a.pnl_pct ?? -Infinity) - (b.pnl_pct ?? -Infinity));
+    }
+  };
 }

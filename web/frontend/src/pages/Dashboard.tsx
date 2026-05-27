@@ -5,10 +5,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { DigestModal } from "../components/DigestModal";
 import { EmptyState } from "../components/EmptyState";
-import { FilterBar, type FilterState, type SortKey } from "../components/FilterBar";
-import { HoldingsTable } from "../components/HoldingsTable";
-import { KPIStrip } from "../components/KPIStrip";
-import { signalRank } from "../lib/format";
+import { FilterBar, type FilterState } from "../components/FilterBar";
+import { HoldingsTable, makeRowSorter } from "../components/HoldingsTable";
+import { KPIStrip, type LiveBucket } from "../components/KPIStrip";
 import type { CardRow, LiveQuote } from "../types";
 
 interface Props {
@@ -32,6 +31,7 @@ export function Dashboard({ onLoadedAt }: Props) {
     refetchInterval: (query) =>
       query.state.data?.any_market_open ? 30_000 : false,
     refetchOnWindowFocus: true,
+    refetchIntervalInBackground: false,
     staleTime: 15_000,
   });
 
@@ -49,7 +49,7 @@ export function Dashboard({ onLoadedAt }: Props) {
     signals: [],
     markets: [],
     position: "all",
-    sort: "signal-sell",
+    sort: { col: "signal", dir: "asc" }, // bearish first by default
   });
 
   // Push the load time up to the TopBar.
@@ -58,6 +58,13 @@ export function Dashboard({ onLoadedAt }: Props) {
   }
 
   const rows = q.data?.rows ?? [];
+
+  // Recompute per-currency buckets from rows + live overlay. This is what
+  // makes the portfolio-value tile actually move when prices update.
+  const liveBuckets = useMemo<LiveBucket[]>(
+    () => computeLiveBuckets(rows, liveByKey),
+    [rows, liveByKey],
+  );
 
   const filtered = useMemo(() => {
     let xs = rows.slice();
@@ -73,9 +80,9 @@ export function Dashboard({ onLoadedAt }: Props) {
     if (filters.position === "losers")
       xs = xs.filter((r) => r.pnl != null && r.pnl < 0);
     if (filters.search) xs = xs.filter((r) => r.symbol.includes(filters.search));
-    xs.sort(makeSorter(filters.sort));
+    xs.sort(makeRowSorter(filters.sort, liveByKey));
     return xs;
-  }, [rows, filters]);
+  }, [rows, filters, liveByKey]);
 
   if (q.isLoading) {
     return (
@@ -110,9 +117,10 @@ export function Dashboard({ onLoadedAt }: Props) {
   return (
     <div className="space-y-4 pb-12">
       <KPIStrip
-        buckets={q.data.buckets}
+        buckets={liveBuckets}
         signalCounts={q.data.signal_counts}
         overweight={q.data.overweight_count}
+        isLive={!!live.data?.any_market_open && Object.keys(liveByKey).length > 0}
       />
 
       <FilterBar
@@ -131,6 +139,8 @@ export function Dashboard({ onLoadedAt }: Props) {
           rows={filtered}
           liveByKey={liveByKey}
           onOpenDigest={(row) => setOpenDigest({ symbol: row.symbol, market: row.market })}
+          sort={filters.sort}
+          onSort={(s) => setFilters({ ...filters, sort: s })}
         />
       )}
 
@@ -157,21 +167,70 @@ export function Dashboard({ onLoadedAt }: Props) {
   );
 }
 
-function makeSorter(key: SortKey) {
-  return (a: CardRow, b: CardRow): number => {
-    switch (key) {
-      case "signal-sell":
-        return signalRank(a.score_label) - signalRank(b.score_label);
-      case "signal-buy":
-        return signalRank(b.score_label) - signalRank(a.score_label);
-      case "ticker":
-        return a.symbol.localeCompare(b.symbol);
-      case "weight-desc":
-        return (b.weight_pct ?? 0) - (a.weight_pct ?? 0);
-      case "pnl-worst":
-        return (a.pnl_pct ?? 0) - (b.pnl_pct ?? 0);
-      case "pnl-best":
-        return (b.pnl_pct ?? 0) - (a.pnl_pct ?? 0);
-    }
-  };
+interface BucketAcc {
+  currency: string;
+  currency_symbol: string;
+  market_value: number;
+  cost_total: number;
+  pnl: number;
+  today_pnl: number;
+  n_positions: number;
+  _hasToday: boolean;
+}
+
+function computeLiveBuckets(
+  rows: CardRow[],
+  liveByKey: Record<string, LiveQuote | undefined>,
+): LiveBucket[] {
+  const byCurrency = new Map<string, BucketAcc>();
+  for (const r of rows) {
+    if (!r.shares || r.shares <= 0 || r.cost_basis == null) continue;
+    const live = liveByKey[`${r.symbol}.${r.market}`];
+    const price = live?.price ?? r.price ?? 0;
+    if (!price) continue;
+    const market_value = price * r.shares;
+    const cost_total = r.cost_basis * r.shares;
+    const pnl = market_value - cost_total;
+    // "Today" only when we actually have a live quote with a change.
+    const today_pnl = live && live.change != null ? live.change * r.shares : 0;
+    const has_today = live != null && live.change != null;
+
+    const bucket: BucketAcc = byCurrency.get(r.currency) ?? {
+      currency: r.currency,
+      currency_symbol: r.currency_symbol,
+      market_value: 0,
+      cost_total: 0,
+      pnl: 0,
+      today_pnl: 0,
+      n_positions: 0,
+      _hasToday: false,
+    };
+    bucket.market_value += market_value;
+    bucket.cost_total += cost_total;
+    bucket.pnl += pnl;
+    bucket.today_pnl += today_pnl;
+    bucket.n_positions += 1;
+    bucket._hasToday = bucket._hasToday || has_today;
+    byCurrency.set(r.currency, bucket);
+  }
+
+  const out: LiveBucket[] = [];
+  for (const b of byCurrency.values()) {
+    const pnl_pct = b.cost_total > 0 ? (b.pnl / b.cost_total) * 100 : 0;
+    // today_pnl_pct = today_pnl / yesterday_value, where yesterday_value ≈ today's value - today_pnl
+    const denom = b.market_value - b.today_pnl;
+    const today_pnl_pct = b._hasToday && denom > 0 ? (b.today_pnl / denom) * 100 : 0;
+    out.push({
+      currency: b.currency,
+      currency_symbol: b.currency_symbol,
+      market_value: b.market_value,
+      cost_total: b.cost_total,
+      pnl: b.pnl,
+      pnl_pct,
+      today_pnl: b._hasToday ? b.today_pnl : null,
+      today_pnl_pct: b._hasToday ? today_pnl_pct : null,
+      n_positions: b.n_positions,
+    });
+  }
+  return out;
 }

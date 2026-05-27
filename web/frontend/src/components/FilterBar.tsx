@@ -4,20 +4,26 @@ import { SIGNAL_ORDER, SIGNAL_STYLES } from "../lib/format";
 import type { SignalLabel } from "../types";
 
 export type PositionFilter = "all" | "overweight" | "winners" | "losers";
-export type SortKey =
-  | "signal-sell"
-  | "signal-buy"
+export type SortCol =
   | "ticker"
-  | "weight-desc"
-  | "pnl-worst"
-  | "pnl-best";
+  | "price"
+  | "day"
+  | "signal"
+  | "rsi"
+  | "weight"
+  | "pnl";
+export type SortDir = "asc" | "desc";
+export interface SortState {
+  col: SortCol;
+  dir: SortDir;
+}
 
 export interface FilterState {
   search: string;
   signals: SignalLabel[];
   markets: string[];
   position: PositionFilter;
-  sort: SortKey;
+  sort: SortState;
 }
 
 interface Props {
@@ -81,23 +87,12 @@ export function FilterBar({ state, onChange, total, shown }: Props) {
           <option value="losers">Losers</option>
         </select>
 
-        <select
-          className="input w-auto"
-          value={state.sort}
-          onChange={(e) =>
-            onChange({ ...state, sort: e.target.value as SortKey })
-          }
-        >
-          <option value="signal-sell">Sort: Sell first</option>
-          <option value="signal-buy">Sort: Buy first</option>
-          <option value="ticker">Sort: Ticker A→Z</option>
-          <option value="weight-desc">Sort: Weight (largest)</option>
-          <option value="pnl-worst">Sort: P&L % (worst)</option>
-          <option value="pnl-best">Sort: P&L % (best)</option>
-        </select>
-
-        <div className="ml-auto text-xs text-zinc-500">
-          {shown} / {total}
+        <div className="ml-auto text-xs text-zinc-500 flex items-center gap-2">
+          <span>
+            sort: <span className="font-medium">{state.sort.col}</span>{" "}
+            {state.sort.dir === "asc" ? "↑" : "↓"}
+          </span>
+          <span>· {shown} / {total}</span>
         </div>
       </div>
 
