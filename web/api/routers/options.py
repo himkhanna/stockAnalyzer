@@ -50,6 +50,15 @@ _BROKER = "icici_breeze"
 # process restart, which is the right TTL for an expiry calendar.
 _PROBE_CACHE: dict[tuple[str, str], list[str]] = {}
 
+# Short-lived chain cache. The Options page can fire 3+ chain-dependent
+# queries in parallel (chain table, IV snapshot, covered calls, chain
+# stats) — we don't want each one to hit Breeze. 30s is short enough that
+# users still see fresh data when they click "Load chain", long enough to
+# coalesce the burst.
+_CHAIN_CACHE_TTL_S = 30.0
+import time as _time  # local alias, avoids reordering top-of-file imports
+_CHAIN_CACHE: dict[tuple[str, str, float], tuple[float, "ChainOut"]] = {}
+
 
 # --- Schemas ---
 
@@ -206,6 +215,15 @@ def chain(
     broker_code: Optional[str] = Query(None, description="ICICI broker stock_code if different from symbol (e.g. EXIIND for EXIDEIND)"),
     rate: float = Query(DEFAULT_RISK_FREE_IN, description="Risk-free rate, decimal (0.07 = 7%)"),
 ) -> ChainOut:
+    return _build_chain(symbol=symbol, expiry=expiry, broker_code=broker_code, rate=rate)
+
+
+def _build_chain(*, symbol: str, expiry: str, broker_code: Optional[str],
+                 rate: float) -> "ChainOut":
+    """Backing implementation for /chain — also called by /iv-snapshot,
+    /covered-calls and /chain-stats so the three sibling queries fired
+    from the Options page collapse to a single Breeze round-trip via the
+    30s in-process cache."""
     try:
         expiry_date = date.fromisoformat(expiry)
     except ValueError:
@@ -228,6 +246,14 @@ def chain(
     learned_code = store.broker_code_get(_BROKER, bare_symbol)
     seed_code = seed_broker_code(bare_symbol)
     underlying_code = (broker_code or learned_code or seed_code or bare_symbol).upper()
+
+    # 30s coalescing cache — IV snapshot + covered calls + chain stats fired
+    # from the same page render hit one Breeze call.
+    cache_key = (underlying_code, expiry_date.isoformat(), float(rate))
+    now = _time.time()
+    cached = _CHAIN_CACHE.get(cache_key)
+    if cached and now - cached[0] < _CHAIN_CACHE_TTL_S:
+        return cached[1]
 
     try:
         client = BreezeClient(cfg["api_key"])
@@ -305,7 +331,7 @@ def chain(
             delta=d, gamma=g, theta=t, vega=v,
         ))
 
-    return ChainOut(
+    result = ChainOut(
         underlying_symbol=bare_symbol,
         underlying_broker_code=underlying_code,
         spot=spot,
@@ -314,6 +340,8 @@ def chain(
         risk_free_rate=rate,
         rows=rows,
     )
+    _CHAIN_CACHE[cache_key] = (now, result)
+    return result
 
 
 class IVSnapshotOut(BaseModel):
@@ -342,7 +370,7 @@ def iv_snapshot(
     rate: float = Query(DEFAULT_RISK_FREE_IN),
 ) -> IVSnapshotOut:
     """ATM implied vol vs 30d realized vol for the underlying."""
-    chain_out = chain(symbol=symbol, expiry=expiry, broker_code=broker_code, rate=rate)
+    chain_out = _build_chain(symbol=symbol, expiry=expiry, broker_code=broker_code, rate=rate)
 
     # Find the ATM strike (closest to spot) and its call IV.
     atm_strike: Optional[float] = None
@@ -422,7 +450,7 @@ def covered_calls(
     Information only — no ranking by 'best trade', no buy/sell call. The
     user picks which trade-off (yield vs assignment risk) they want.
     """
-    chain_out = chain(symbol=symbol, expiry=expiry, broker_code=broker_code, rate=rate)
+    chain_out = _build_chain(symbol=symbol, expiry=expiry, broker_code=broker_code, rate=rate)
 
     spot = chain_out.spot
     days = chain_out.days_to_expiry
@@ -467,6 +495,124 @@ def covered_calls(
         expiry=chain_out.expiry,
         days_to_expiry=days,
         rows=out_rows,
+    )
+
+
+class OIByStrike(BaseModel):
+    strike: float
+    call_oi: float = 0.0
+    put_oi: float = 0.0
+    writer_loss: float = 0.0  # what option writers lose if spot expires here
+
+
+class ChainStatsOut(BaseModel):
+    underlying_symbol: str
+    underlying_broker_code: str
+    spot: Optional[float]
+    expiry: str
+    days_to_expiry: int
+
+    total_call_oi: float
+    total_put_oi: float
+    pcr_oi: Optional[float]              # put OI / call OI
+
+    total_call_volume: float
+    total_put_volume: float
+    pcr_volume: Optional[float]          # put vol / call vol (None if no vol)
+
+    max_pain_strike: Optional[float]     # strike that minimises writer loss
+    max_pain_distance_pct: Optional[float]  # (max_pain - spot) / spot * 100
+
+    oi_by_strike: list[OIByStrike]       # for charting
+
+    note: str = (
+        "Max-pain = strike that minimises aggregate option-writer loss at "
+        "expiry, computed from open interest. PCR = put OI / call OI. "
+        "These are widely-watched datapoints but not signals — high PCR can "
+        "mean fear or just heavy hedging."
+    )
+
+
+@router.get("/chain-stats", response_model=ChainStatsOut)
+def chain_stats(
+    symbol: str = Query(...),
+    expiry: str = Query(...),
+    broker_code: Optional[str] = Query(None),
+    rate: float = Query(DEFAULT_RISK_FREE_IN),
+) -> ChainStatsOut:
+    """Open-interest aggregates: max-pain strike, PCR, OI-by-strike for
+    the loaded chain. Pure math over the chain rows; no opinion."""
+    chain_out = _build_chain(symbol=symbol, expiry=expiry, broker_code=broker_code, rate=rate)
+
+    # Aggregate OI and volume per strike.
+    agg: dict[float, dict] = {}
+    total_c_oi = total_p_oi = 0.0
+    total_c_vol = total_p_vol = 0.0
+    for r in chain_out.rows:
+        slot = agg.setdefault(r.strike, {"call_oi": 0.0, "put_oi": 0.0,
+                                          "call_vol": 0.0, "put_vol": 0.0})
+        oi = r.open_interest or 0.0
+        vol = r.volume or 0.0
+        if r.right == "call":
+            slot["call_oi"] += oi
+            slot["call_vol"] += vol
+            total_c_oi += oi
+            total_c_vol += vol
+        else:
+            slot["put_oi"] += oi
+            slot["put_vol"] += vol
+            total_p_oi += oi
+            total_p_vol += vol
+
+    # Max-pain: at each candidate spot K, what do writers lose?
+    #   call writers lose max(K - Kc, 0) * call_OI_at_Kc for each strike Kc
+    #   put writers lose max(Kp - K, 0) * put_OI_at_Kp for each strike Kp
+    strikes = sorted(agg.keys())
+    oi_rows: list[OIByStrike] = []
+    max_pain_strike: Optional[float] = None
+    min_loss = float("inf")
+    if strikes:
+        for candidate in strikes:
+            loss = 0.0
+            for k in strikes:
+                if candidate > k:
+                    loss += (candidate - k) * agg[k]["call_oi"]
+                if candidate < k:
+                    loss += (k - candidate) * agg[k]["put_oi"]
+            agg[candidate]["writer_loss"] = loss
+            if loss < min_loss:
+                min_loss = loss
+                max_pain_strike = candidate
+        for k in strikes:
+            oi_rows.append(OIByStrike(
+                strike=k,
+                call_oi=agg[k]["call_oi"],
+                put_oi=agg[k]["put_oi"],
+                writer_loss=agg[k].get("writer_loss", 0.0),
+            ))
+
+    pcr_oi = (total_p_oi / total_c_oi) if total_c_oi > 0 else None
+    pcr_vol = (total_p_vol / total_c_vol) if total_c_vol > 0 else None
+
+    max_pain_dist = None
+    if max_pain_strike is not None and chain_out.spot:
+        max_pain_dist = (max_pain_strike - chain_out.spot) / chain_out.spot * 100.0
+
+    return ChainStatsOut(
+        underlying_symbol=chain_out.underlying_symbol,
+        underlying_broker_code=chain_out.underlying_broker_code,
+        spot=chain_out.spot,
+        expiry=chain_out.expiry,
+        days_to_expiry=chain_out.days_to_expiry,
+        total_call_oi=total_c_oi,
+        total_put_oi=total_p_oi,
+        pcr_oi=round(pcr_oi, 3) if pcr_oi is not None else None,
+        total_call_volume=total_c_vol,
+        total_put_volume=total_p_vol,
+        pcr_volume=round(pcr_vol, 3) if pcr_vol is not None else None,
+        max_pain_strike=max_pain_strike,
+        max_pain_distance_pct=round(max_pain_dist, 2) if max_pain_dist is not None else None,
+        oi_by_strike=oi_rows,
     )
 
 

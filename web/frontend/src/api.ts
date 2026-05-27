@@ -11,6 +11,7 @@ import type {
   HoldingIn,
   ImportResult,
   Insights,
+  ChainStats,
   CoveredCalls,
   IVSnapshot,
   LiveQuotes,
@@ -206,6 +207,11 @@ export const api = {
     const params = new URLSearchParams({ symbol, expiry });
     if (brokerCode) params.set("broker_code", brokerCode);
     return request<CoveredCalls>(`/options/covered-calls?${params.toString()}`);
+  },
+  optionChainStats: (symbol: string, expiry: string, brokerCode?: string) => {
+    const params = new URLSearchParams({ symbol, expiry });
+    if (brokerCode) params.set("broker_code", brokerCode);
+    return request<ChainStats>(`/options/chain-stats?${params.toString()}`);
   },
   optionPayoff: (body: PayoffIn) =>
     request<PayoffOut>("/options/payoff", {

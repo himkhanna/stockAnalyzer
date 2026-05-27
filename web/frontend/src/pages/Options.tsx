@@ -9,7 +9,11 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
+  Bar,
+  BarChart,
   CartesianGrid,
+  ComposedChart,
+  Legend,
   Line,
   LineChart,
   ReferenceLine,
@@ -22,7 +26,7 @@ import {
 import { api } from "../api";
 import { EmptyState } from "../components/EmptyState";
 import { TickerCombo } from "../components/TickerCombo";
-import type { OptionRow, PayoffLeg } from "../types";
+import type { OptionChain, OptionRow, PayoffLeg } from "../types";
 
 export function OptionsPage() {
   // Lift state so IV panel + covered-calls section can react to the chain's
@@ -52,6 +56,8 @@ export function OptionsPage() {
         expiry={expiry}
         setExpiry={setExpiry}
       />
+      <ChainStatsPanel symbol={symbol} brokerCode={brokerCode} expiry={expiry} />
+      <IVSmilePanel symbol={symbol} brokerCode={brokerCode} expiry={expiry} />
       <IVPanel symbol={symbol} brokerCode={brokerCode} expiry={expiry} />
       <CoveredCallsSection
         symbol={symbol}
@@ -288,6 +294,261 @@ function ChainSection({
       )}
     </section>
   );
+}
+
+// ---- Chain stats: max-pain + PCR + OI by strike ----
+
+function ChainStatsPanel({
+  symbol,
+  brokerCode,
+  expiry,
+}: {
+  symbol: string;
+  brokerCode: string;
+  expiry: string;
+}) {
+  const stats = useQuery({
+    queryKey: ["chain-stats", symbol.trim().toUpperCase(), brokerCode.trim().toUpperCase(), expiry],
+    queryFn: () => api.optionChainStats(symbol.trim(), expiry, brokerCode.trim() || undefined),
+    enabled: !!symbol.trim() && !!expiry,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
+  if (!symbol.trim() || !expiry) return null;
+
+  const data = stats.data;
+  const pcrTone = (pcr: number | null | undefined) =>
+    pcr == null ? "text-zinc-400" : pcr >= 1.3 ? "text-bull-500" : pcr <= 0.7 ? "text-bear-500" : "text-zinc-600 dark:text-zinc-300";
+
+  return (
+    <section className="space-y-2">
+      <div className="flex items-baseline gap-2">
+        <h2 className="text-base font-bold">Max-pain &amp; PCR</h2>
+        <span className="text-xs text-zinc-500">
+          where option writers want spot to land · open-interest skew
+        </span>
+      </div>
+      <div className="card p-4 space-y-4">
+        {stats.isFetching && !data ? (
+          <div className="text-sm text-zinc-500 flex items-center gap-2">
+            <Loader2 size={14} className="animate-spin" /> Loading…
+          </div>
+        ) : stats.error ? (
+          <div className="text-sm text-bear-500">{(stats.error as Error).message}</div>
+        ) : data ? (
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <Stat
+                label="Max-pain strike"
+                v={data.max_pain_strike}
+                subtitle={
+                  data.max_pain_distance_pct != null
+                    ? `${data.max_pain_distance_pct >= 0 ? "+" : ""}${data.max_pain_distance_pct.toFixed(1)}% vs spot`
+                    : "—"
+                }
+                tone="neutral"
+              />
+              <Stat
+                label="PCR (OI)"
+                v={data.pcr_oi}
+                subtitle={
+                  data.pcr_oi == null
+                    ? "—"
+                    : data.pcr_oi >= 1.3
+                    ? "puts heavy — fear or hedging"
+                    : data.pcr_oi <= 0.7
+                    ? "calls heavy — bullish positioning"
+                    : "balanced"
+                }
+                tone="neutral"
+              />
+              <div className="rounded-md border border-zinc-200 dark:border-zinc-800 p-3">
+                <div className="text-[11px] text-zinc-500 uppercase tracking-wider">
+                  Call OI
+                </div>
+                <div className="text-lg font-mono font-semibold text-bull-500">
+                  {Math.round(data.total_call_oi).toLocaleString()}
+                </div>
+                <div className="text-xs text-zinc-500 mt-0.5">total contracts</div>
+              </div>
+              <div className="rounded-md border border-zinc-200 dark:border-zinc-800 p-3">
+                <div className="text-[11px] text-zinc-500 uppercase tracking-wider">
+                  Put OI
+                </div>
+                <div className="text-lg font-mono font-semibold text-bear-500">
+                  {Math.round(data.total_put_oi).toLocaleString()}
+                </div>
+                <div className="text-xs text-zinc-500 mt-0.5">total contracts</div>
+              </div>
+            </div>
+
+            {data.oi_by_strike.length > 0 && (
+              <div className="h-64 w-full">
+                <ResponsiveContainer>
+                  <BarChart data={data.oi_by_strike} margin={{ left: 10, right: 10, top: 10, bottom: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(120,120,120,0.2)" />
+                    <XAxis
+                      dataKey="strike"
+                      tick={{ fontSize: 10 }}
+                      tickFormatter={(v) => v.toFixed(0)}
+                      label={{ value: "Strike", position: "insideBottom", offset: -5, fontSize: 10 }}
+                    />
+                    <YAxis
+                      tick={{ fontSize: 10 }}
+                      tickFormatter={(v) => v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v)}
+                    />
+                    <Tooltip
+                      contentStyle={{ fontSize: 12 }}
+                      formatter={(v: number) => Math.round(v).toLocaleString()}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    {data.spot != null && (
+                      <ReferenceLine
+                        x={data.spot}
+                        stroke="rgba(245,158,11,0.7)"
+                        strokeDasharray="3 3"
+                        label={{ value: "spot", fontSize: 10, fill: "rgb(245,158,11)" }}
+                      />
+                    )}
+                    {data.max_pain_strike != null && (
+                      <ReferenceLine
+                        x={data.max_pain_strike}
+                        stroke="rgba(120,120,120,0.7)"
+                        strokeDasharray="2 4"
+                        label={{ value: "max-pain", fontSize: 10, fill: "rgb(120,120,120)" }}
+                      />
+                    )}
+                    <Bar dataKey="call_oi" name="Calls OI" fill="#22c55e" opacity={0.7} />
+                    <Bar dataKey="put_oi" name="Puts OI" fill="#ef4444" opacity={0.7} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </>
+        ) : null}
+        {data && (
+          <div className="text-[11px] text-zinc-400 leading-relaxed">{data.note}</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// ---- IV smile chart ----
+
+function IVSmilePanel({
+  symbol,
+  brokerCode,
+  expiry,
+}: {
+  symbol: string;
+  brokerCode: string;
+  expiry: string;
+}) {
+  const q = useQuery({
+    queryKey: ["chain-for-smile", symbol.trim().toUpperCase(), brokerCode.trim().toUpperCase(), expiry],
+    queryFn: () => api.optionChain(symbol.trim(), expiry, brokerCode.trim() || undefined),
+    enabled: !!symbol.trim() && !!expiry,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
+  if (!symbol.trim() || !expiry) return null;
+
+  const points = useMemo(() => extractSmile(q.data), [q.data]);
+  if (!q.data && !q.isFetching) return null;
+
+  return (
+    <section className="space-y-2">
+      <div className="flex items-baseline gap-2">
+        <h2 className="text-base font-bold">IV smile</h2>
+        <span className="text-xs text-zinc-500">
+          implied vol vs strike · skew shows where the market is paying up
+        </span>
+      </div>
+      <div className="card p-4">
+        {q.isFetching && !q.data ? (
+          <div className="text-sm text-zinc-500 flex items-center gap-2">
+            <Loader2 size={14} className="animate-spin" /> Loading…
+          </div>
+        ) : q.error ? (
+          <div className="text-sm text-bear-500">{(q.error as Error).message}</div>
+        ) : points.length < 3 ? (
+          <div className="text-sm text-zinc-500">
+            Not enough IV-solved strikes to draw the smile.
+          </div>
+        ) : (
+          <div className="h-64 w-full">
+            <ResponsiveContainer>
+              <ComposedChart data={points} margin={{ left: 10, right: 10, top: 10, bottom: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(120,120,120,0.2)" />
+                <XAxis
+                  dataKey="strike"
+                  tick={{ fontSize: 10 }}
+                  tickFormatter={(v) => v.toFixed(0)}
+                  label={{ value: "Strike", position: "insideBottom", offset: -5, fontSize: 10 }}
+                  type="number"
+                  domain={["dataMin", "dataMax"]}
+                />
+                <YAxis
+                  tick={{ fontSize: 10 }}
+                  tickFormatter={(v) => `${(v * 100).toFixed(0)}%`}
+                  label={{ value: "IV", angle: -90, position: "insideLeft", fontSize: 10 }}
+                />
+                <Tooltip
+                  contentStyle={{ fontSize: 12 }}
+                  formatter={(v: number) => `${(v * 100).toFixed(1)}%`}
+                  labelFormatter={(s: number) => `K = ${s.toFixed(2)}`}
+                />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                {q.data?.spot != null && (
+                  <ReferenceLine
+                    x={q.data.spot}
+                    stroke="rgba(245,158,11,0.7)"
+                    strokeDasharray="3 3"
+                    label={{ value: "spot", fontSize: 10, fill: "rgb(245,158,11)" }}
+                  />
+                )}
+                <Line
+                  type="monotone"
+                  dataKey="call_iv"
+                  name="Call IV"
+                  stroke="#22c55e"
+                  strokeWidth={2}
+                  dot={{ r: 2 }}
+                  connectNulls
+                />
+                <Line
+                  type="monotone"
+                  dataKey="put_iv"
+                  name="Put IV"
+                  stroke="#ef4444"
+                  strokeWidth={2}
+                  dot={{ r: 2 }}
+                  connectNulls
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function extractSmile(chain: OptionChain | undefined) {
+  if (!chain) return [];
+  const byStrike = new Map<number, { strike: number; call_iv: number | null; put_iv: number | null }>();
+  for (const r of chain.rows) {
+    const slot = byStrike.get(r.strike) ?? { strike: r.strike, call_iv: null, put_iv: null };
+    if (r.right === "call") slot.call_iv = r.iv;
+    else slot.put_iv = r.iv;
+    byStrike.set(r.strike, slot);
+  }
+  return Array.from(byStrike.values())
+    .filter((p) => p.call_iv != null || p.put_iv != null)
+    .sort((a, b) => a.strike - b.strike);
 }
 
 // ---- IV vs RV panel ----

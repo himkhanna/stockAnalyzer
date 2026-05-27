@@ -323,6 +323,31 @@ export interface CoveredCalls {
   note: string;
 }
 
+export interface OIByStrike {
+  strike: number;
+  call_oi: number;
+  put_oi: number;
+  writer_loss: number;
+}
+
+export interface ChainStats {
+  underlying_symbol: string;
+  underlying_broker_code: string;
+  spot: number | null;
+  expiry: string;
+  days_to_expiry: number;
+  total_call_oi: number;
+  total_put_oi: number;
+  pcr_oi: number | null;
+  total_call_volume: number;
+  total_put_volume: number;
+  pcr_volume: number | null;
+  max_pain_strike: number | null;
+  max_pain_distance_pct: number | null;
+  oi_by_strike: OIByStrike[];
+  note: string;
+}
+
 export interface OptionExpiriesProbe {
   underlying_symbol: string;
   underlying_broker_code: string;
