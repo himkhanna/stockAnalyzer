@@ -148,7 +148,8 @@ export const api = {
     );
   },
 
-  getInsights: () => request<Insights>("/insights"),
+  getInsights: (force = false) =>
+    request<Insights>(`/insights${force ? "?force=true" : ""}`),
 
   diversification: () => request<DiversificationReport>("/insights/diversification"),
 

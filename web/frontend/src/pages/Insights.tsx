@@ -24,9 +24,24 @@ import type {
 import { SignalPill } from "../components/SignalPill";
 
 export function InsightsPage() {
-  const q = useQuery({ queryKey: ["insights"], queryFn: api.getInsights });
+  const qc = useQueryClient();
+  // Manual-refresh model: cache forever in React Query; the backend's
+  // disk cache is the source of truth. Tab clicks reuse the cached
+  // result instantly. Refresh button below forces a rebuild.
+  const q = useQuery({
+    queryKey: ["insights"],
+    queryFn: () => api.getInsights(),
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
+  });
 
-  if (q.isLoading) {
+  const refresh = useMutation({
+    mutationFn: () => api.getInsights(true),
+    onSuccess: (data) => qc.setQueryData(["insights"], data),
+  });
+
+  if (q.isLoading || (refresh.isPending && !q.data)) {
     return (
       <div className="flex items-center gap-2 text-zinc-500 py-12 justify-center">
         <Loader2 className="animate-spin" size={16} /> Building insights…
@@ -49,7 +64,13 @@ export function InsightsPage() {
   }
 
   const d = q.data;
-  return <InsightsLoaded data={d} />;
+  return (
+    <InsightsLoaded
+      data={d}
+      onRefresh={() => refresh.mutate()}
+      refreshing={refresh.isPending}
+    />
+  );
 }
 
 type InsightsTab = "pulse" | "performance" | "opportunities" | "watchlist";
@@ -63,7 +84,13 @@ const _TABS: { key: InsightsTab; label: string; hint: string }[] = [
 
 const _TAB_STORAGE_KEY = "pi.insights.tab";
 
-function InsightsLoaded({ data: d }: { data: ReturnType<typeof api.getInsights> extends Promise<infer T> ? T : never }) {
+interface InsightsLoadedProps {
+  data: ReturnType<typeof api.getInsights> extends Promise<infer T> ? T : never;
+  onRefresh: () => void;
+  refreshing: boolean;
+}
+
+function InsightsLoaded({ data: d, onRefresh, refreshing }: InsightsLoadedProps) {
   // Remember the last tab across reloads — quality-of-life thing.
   const [tab, setTab] = useState<InsightsTab>(() => {
     if (typeof window === "undefined") return "pulse";
@@ -88,6 +115,18 @@ function InsightsLoaded({ data: d }: { data: ReturnType<typeof api.getInsights> 
             <LastRefreshed at={d.generated_at} label="generated" />
             <span>· {d.note}</span>
           </p>
+          <button
+            className="btn-ghost text-xs ml-auto"
+            onClick={onRefresh}
+            disabled={refreshing}
+            title="Rebuild every panel against fresh data — slow"
+          >
+            {refreshing ? (
+              <><Loader2 size={12} className="animate-spin" /> Refreshing…</>
+            ) : (
+              <><RefreshCw size={12} /> Refresh insights</>
+            )}
+          </button>
         </div>
         <nav className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800 overflow-x-auto">
           {_TABS.map((t) => {

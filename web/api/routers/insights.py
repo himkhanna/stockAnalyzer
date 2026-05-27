@@ -80,6 +80,51 @@ _DISCOVERY_LOCK = threading.Lock()
 _HISTORY_CACHE: dict[tuple[str, str, str], "object"] = {}
 _HISTORY_LOCK = threading.Lock()
 
+# Insights cache. We persist the full /api/insights payload to disk and
+# only rebuild when (a) the holding set changes (fingerprint), or
+# (b) the user explicitly hits Refresh (?force=true). Hitting the
+# Insights tab repeatedly should NOT trigger N rebuilds — users like
+# himkhanna get visibly annoyed by the latency, and most of the
+# panels (conviction, risk, signal changes, earnings) don't change
+# meaningfully between page loads anyway.
+_INSIGHTS_CACHE_FILE = Path(".insights_cache.pkl")
+_INSIGHTS_LOCK = threading.Lock()
+
+
+def _portfolio_fingerprint() -> tuple:
+    """Cheap fingerprint over the holdings set — when this changes, the
+    insights cache should miss."""
+    try:
+        holdings = get_store().all()
+        return tuple(sorted(
+            (h.ticker.upper(), h.market_code.upper(), h.shares)
+            for h in holdings
+        ))
+    except Exception:
+        return ("",)
+
+
+def _insights_load() -> Optional[dict]:
+    if not _INSIGHTS_CACHE_FILE.exists():
+        return None
+    try:
+        with _INSIGHTS_CACHE_FILE.open("rb") as f:
+            return pickle.load(f)
+    except (pickle.UnpicklingError, EOFError, AttributeError, ImportError):
+        try:
+            _INSIGHTS_CACHE_FILE.unlink()
+        except OSError:
+            pass
+        return None
+
+
+def _insights_save(payload: dict) -> None:
+    try:
+        with _INSIGHTS_CACHE_FILE.open("wb") as f:
+            pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+    except OSError:
+        pass
+
 
 def _bulk_warm_history(items: list[tuple[str, str]]) -> None:
     """Pre-populate _HISTORY_CACHE for many holdings in one yfinance call.
@@ -147,19 +192,39 @@ _ROUGH_FX_TO_INR = {"INR": 1.0, "USD": 83.0, "AED": 22.6}
 
 
 @router.get("", response_model=InsightsOut)
-def get_insights() -> InsightsOut:
-    payload = get_dashboard()
-    rows = payload["rows"]
+def get_insights(
+    force: bool = Query(False, description="Skip the cache and rebuild now"),
+) -> InsightsOut:
+    """Return the Insights payload. Cached on disk between calls and
+    only rebuilt when the user explicitly refreshes or the portfolio
+    fingerprint changes (holdings added/removed/qty changed)."""
+    fp = _portfolio_fingerprint()
+    with _INSIGHTS_LOCK:
+        if not force:
+            cached = _insights_load()
+            if cached and cached.get("fp") == fp:
+                try:
+                    return InsightsOut(**cached["payload"])
+                except Exception:
+                    # Schema drift since the cache was written; rebuild.
+                    pass
 
-    return InsightsOut(
-        conviction=_conviction_panel(rows),
-        watchlist=_watchlist_panel(),
-        indices=_indices_panel(),
-        risk=_risk_panel(rows),
-        signal_changes=_signal_changes_panel(rows, payload.get("loaded_at", "")),
-        upcoming_earnings=_earnings_panel(rows),
-        generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
-    )
+        # Force the dashboard cache to rebuild too — the user pressed Refresh
+        # because they want everything fresh, not just the post-aggregation
+        # panels.
+        payload = get_dashboard(force=force)
+        rows = payload["rows"]
+        out = InsightsOut(
+            conviction=_conviction_panel(rows),
+            watchlist=_watchlist_panel(),
+            indices=_indices_panel(),
+            risk=_risk_panel(rows),
+            signal_changes=_signal_changes_panel(rows, payload.get("loaded_at", "")),
+            upcoming_earnings=_earnings_panel(rows),
+            generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+        )
+        _insights_save({"fp": fp, "payload": out.model_dump()})
+        return out
 
 
 # --- Conviction board ---
