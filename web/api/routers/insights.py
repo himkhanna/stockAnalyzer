@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from portfolio_intel.discovery import (
     classify as classify_asset,
@@ -25,12 +25,18 @@ from portfolio_intel.discovery import (
 )
 from portfolio_intel.markets import INDICES, Market
 from portfolio_intel.portfolio.performance import Period, attribute
-from portfolio_intel.portfolio.tax import find_harvest_candidates
+from portfolio_intel.portfolio.tax import (
+    current_fy,
+    find_harvest_candidates,
+    summarise_realized_gains,
+)
 
 from ..schemas import (
     AssetSliceOut,
     AttributionBucketOut,
     AttributionRowOut,
+    CapitalGainsBucketOut,
+    CapitalGainsOut,
     CardRowOut,
     ConvictionRow,
     CurrencyExposure,
@@ -43,6 +49,8 @@ from ..schemas import (
     IndexSnapshot,
     InsightsOut,
     PerformanceOut,
+    RealizedGainIn,
+    RealizedGainOut,
     RiskPanel,
     RiskTopWeight,
     SignalChange,
@@ -793,4 +801,116 @@ def performance(
             for b in buckets
         ],
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+    )
+
+
+# --- Capital gains running tally ---
+
+
+def _resolve_fy_for_entry(market: str, realized_at_iso: str) -> str:
+    """FY for a particular realized-at date, market-aware."""
+    try:
+        d = datetime.fromisoformat(realized_at_iso).date()
+    except Exception:
+        d = datetime.now().date()
+    return current_fy(market.upper(), today=d)
+
+
+@router.post("/capital-gains/entries", response_model=RealizedGainOut)
+def capital_gains_add(entry: RealizedGainIn) -> RealizedGainOut:
+    if entry.term not in ("short", "long"):
+        raise HTTPException(status_code=400, detail="term must be 'short' or 'long'")
+    try:
+        datetime.fromisoformat(entry.realized_at)
+    except Exception:
+        raise HTTPException(status_code=400, detail="realized_at must be ISO date YYYY-MM-DD")
+    fy = _resolve_fy_for_entry(entry.market, entry.realized_at)
+    store = get_store()
+    gid = store.realized_gain_add(
+        ticker=entry.ticker, market=entry.market, qty=entry.qty,
+        gain_amount=entry.gain_amount, currency=entry.currency,
+        term=entry.term, realized_at=entry.realized_at, fy=fy,
+        note=entry.note or "",
+    )
+    # Pull back to return the canonical row.
+    for row in store.realized_gains_list(fy=fy):
+        if int(row["id"]) == gid:
+            return RealizedGainOut(**row)
+    raise HTTPException(status_code=500, detail="insert succeeded but row not found")
+
+
+@router.delete("/capital-gains/entries/{gain_id}")
+def capital_gains_remove(gain_id: int) -> dict:
+    ok = get_store().realized_gain_remove(gain_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="entry not found")
+    return {"ok": True}
+
+
+@router.get("/capital-gains", response_model=CapitalGainsOut)
+def capital_gains(
+    fy: Optional[str] = Query(
+        None,
+        description="Financial year (e.g. '2025-26' for India, '2025' for US). Defaults to current FY per market.",
+    ),
+) -> CapitalGainsOut:
+    """Aggregate realized gains for the current FY + projected tax,
+    plus the offset available from currently-unrealised losses (the
+    harvest panel)."""
+    store = get_store()
+
+    # Decide which FY string to use per market.
+    today = date.today()
+    fy_by_market: dict[str, str] = {
+        "NSE": fy or current_fy("NSE", today),
+        "BSE": fy or current_fy("BSE", today),
+        "US": fy or current_fy("US", today),
+    }
+
+    # Pull entries for each unique FY string we care about.
+    seen_fys = set(fy_by_market.values())
+    all_entries: list[dict] = []
+    for f in seen_fys:
+        all_entries.extend(store.realized_gains_list(fy=f))
+
+    currency_symbols: dict[str, str] = {"INR": "₹", "USD": "$", "AED": "د.إ"}
+    buckets = summarise_realized_gains(all_entries, currency_symbols=currency_symbols)
+
+    total_tax_by_cur: dict[str, float] = {}
+    for b in buckets:
+        sym = b.currency_symbol
+        total_tax_by_cur[sym] = total_tax_by_cur.get(sym, 0.0) + b.est_tax_due_after_exempt
+
+    # Harvest offset: re-use the harvest panel's logic to get potential
+    # savings if the user realised all current unrealised losses.
+    harvest = tax_harvest()
+    harvest_offset_by_cur: dict[str, float] = dict(harvest.total_saving_by_currency)
+
+    net_tax_after: dict[str, float] = {}
+    for sym, tax in total_tax_by_cur.items():
+        offset = harvest_offset_by_cur.get(sym, 0.0)
+        net_tax_after[sym] = max(0.0, round(tax - offset, 2))
+
+    return CapitalGainsOut(
+        fy_by_market=fy_by_market,
+        buckets=[
+            CapitalGainsBucketOut(
+                currency=b.currency,
+                currency_symbol=b.currency_symbol,
+                term=b.term,
+                realized_gain=round(b.realized_gain, 2),
+                realized_loss=round(b.realized_loss, 2),
+                net=round(b.net, 2),
+                n_entries=b.n_entries,
+                tax_rate=b.tax_rate,
+                est_tax_due=round(b.est_tax_due, 2),
+                ltcg_exempt_applied=round(b.ltcg_exempt_applied, 2),
+                est_tax_due_after_exempt=round(b.est_tax_due_after_exempt, 2),
+            )
+            for b in buckets
+        ],
+        entries=[RealizedGainOut(**e) for e in all_entries],
+        total_tax_due_by_currency={k: round(v, 2) for k, v in total_tax_by_cur.items()},
+        harvest_offset_by_currency={k: round(v, 2) for k, v in harvest_offset_by_cur.items()},
+        net_tax_after_harvest_by_currency=net_tax_after,
     )

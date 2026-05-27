@@ -370,6 +370,55 @@ export interface Performance {
   note: string;
 }
 
+export interface RealizedGainIn {
+  ticker: string;
+  market: string;
+  qty: number;
+  gain_amount: number;
+  currency: string;
+  term: "short" | "long";
+  realized_at: string;
+  note?: string;
+}
+
+export interface RealizedGainOut {
+  id: number;
+  ticker: string;
+  market: string;
+  qty: number;
+  gain_amount: number;
+  currency: string;
+  term: string;
+  realized_at: string;
+  fy: string;
+  note: string | null;
+  created_at: string;
+}
+
+export interface CapitalGainsBucket {
+  currency: string;
+  currency_symbol: string;
+  term: string;
+  realized_gain: number;
+  realized_loss: number;
+  net: number;
+  n_entries: number;
+  tax_rate: number;
+  est_tax_due: number;
+  ltcg_exempt_applied: number;
+  est_tax_due_after_exempt: number;
+}
+
+export interface CapitalGains {
+  fy_by_market: Record<string, string>;
+  buckets: CapitalGainsBucket[];
+  entries: RealizedGainOut[];
+  total_tax_due_by_currency: Record<string, number>;
+  harvest_offset_by_currency: Record<string, number>;
+  net_tax_after_harvest_by_currency: Record<string, number>;
+  note: string;
+}
+
 export interface HarvestCandidate {
   ticker: string;
   market: string;

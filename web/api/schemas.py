@@ -308,6 +308,60 @@ class DiversificationOut(BaseModel):
     )
 
 
+class RealizedGainIn(BaseModel):
+    ticker: str
+    market: str
+    qty: float
+    gain_amount: float
+    currency: str
+    term: str                          # "short" | "long"
+    realized_at: str                   # ISO date
+    note: str | None = ""
+
+
+class RealizedGainOut(BaseModel):
+    id: int
+    ticker: str
+    market: str
+    qty: float
+    gain_amount: float
+    currency: str
+    term: str
+    realized_at: str
+    fy: str
+    note: str | None = None
+    created_at: str
+
+
+class CapitalGainsBucketOut(BaseModel):
+    currency: str
+    currency_symbol: str
+    term: str
+    realized_gain: float
+    realized_loss: float
+    net: float
+    n_entries: int
+    tax_rate: float
+    est_tax_due: float
+    ltcg_exempt_applied: float = 0.0
+    est_tax_due_after_exempt: float = 0.0
+
+
+class CapitalGainsOut(BaseModel):
+    fy_by_market: dict[str, str]       # market_code -> FY string in use
+    buckets: list[CapitalGainsBucketOut]
+    entries: list[RealizedGainOut]
+    total_tax_due_by_currency: dict[str, float]
+    harvest_offset_by_currency: dict[str, float]    # potential offset from current losses
+    net_tax_after_harvest_by_currency: dict[str, float]
+    note: str = (
+        "Estimated tax due = max(0, net realised gain per (currency, term)) "
+        "× bucket rate. India LTCG: first ₹1.25L per FY is exempt. "
+        "Harvest offset assumes you realise the harvest-panel losses too. "
+        "Real liability depends on filing; verify with your accountant."
+    )
+
+
 class HarvestCandidateOut(BaseModel):
     ticker: str
     market: str

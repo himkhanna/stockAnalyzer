@@ -90,6 +90,21 @@ CREATE TABLE IF NOT EXISTS broker_code_map (
     updated_at      TEXT NOT NULL,
     PRIMARY KEY (broker, exchange_ticker)
 );
+
+CREATE TABLE IF NOT EXISTS realized_gains (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker       TEXT NOT NULL,
+    market       TEXT NOT NULL,
+    qty          REAL NOT NULL,
+    gain_amount  REAL NOT NULL,            -- positive = gain, negative = loss
+    currency     TEXT NOT NULL,
+    term         TEXT NOT NULL,            -- "short" | "long"
+    realized_at  TEXT NOT NULL,            -- ISO date
+    fy           TEXT NOT NULL,            -- "2025-26" (India) or "2025" (US)
+    note         TEXT,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS realized_gains_fy_ix ON realized_gains(fy, market);
 """
 
 
@@ -410,6 +425,47 @@ class PortfolioStore:
                 "FROM broker_code_map WHERE broker = ? ORDER BY exchange_ticker",
                 (broker,),
             ).fetchall()
+            return [dict(r) for r in rows]
+
+    # --- Realized gains (capital gains running tally) ---
+
+    def realized_gain_add(self, *, ticker: str, market: str, qty: float,
+                          gain_amount: float, currency: str, term: str,
+                          realized_at: str, fy: str, note: str = "") -> int:
+        from datetime import datetime as _dt
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO realized_gains
+                  (ticker, market, qty, gain_amount, currency, term,
+                   realized_at, fy, note, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (ticker.upper(), market.upper(), float(qty), float(gain_amount),
+                 currency.upper(), term, realized_at, fy, note,
+                 _dt.utcnow().isoformat()),
+            )
+            return int(cur.lastrowid)
+
+    def realized_gain_remove(self, gain_id: int) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM realized_gains WHERE id = ?", (gain_id,),
+            )
+            return cur.rowcount > 0
+
+    def realized_gains_list(self, *, fy: Optional[str] = None) -> list[dict]:
+        sql = (
+            "SELECT id, ticker, market, qty, gain_amount, currency, term, "
+            "realized_at, fy, note, created_at FROM realized_gains"
+        )
+        params: tuple = ()
+        if fy:
+            sql += " WHERE fy = ?"
+            params = (fy,)
+        sql += " ORDER BY realized_at DESC, id DESC"
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
             return [dict(r) for r in rows]
 
 

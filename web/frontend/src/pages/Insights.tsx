@@ -129,6 +129,7 @@ function InsightsLoaded({ data: d }: { data: ReturnType<typeof api.getInsights> 
 
       {tab === "opportunities" && (
         <div className="space-y-8">
+          <CapitalGainsSection />
           <TaxHarvestSection />
           <DiversificationSection />
           <DiscoverSection />
@@ -302,6 +303,383 @@ function AttributionBucketBlock({ bucket }: { bucket: import("../types").Attribu
         </tbody>
       </table>
     </div>
+  );
+}
+
+// --- Capital gains running tally ---
+
+function CapitalGainsSection() {
+  const qc = useQueryClient();
+  const q = useQuery({
+    queryKey: ["capital-gains"],
+    queryFn: api.capitalGains,
+    staleTime: 60 * 1000,
+    retry: false,
+  });
+  const [showForm, setShowForm] = useState(false);
+  const [formErr, setFormErr] = useState<string | null>(null);
+  const remove = useMutation({
+    mutationFn: (id: number) => api.removeRealizedGain(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["capital-gains"] }),
+  });
+
+  const data = q.data;
+  const totalTaxLine = data ? Object.entries(data.total_tax_due_by_currency)
+    .filter(([, v]) => v > 0)
+    .map(([sym, v]) => `${sym}${Math.round(v).toLocaleString()}`)
+    .join(" · ") : "";
+  const netTaxLine = data ? Object.entries(data.net_tax_after_harvest_by_currency)
+    .map(([sym, v]) => `${sym}${Math.round(v).toLocaleString()}`)
+    .join(" · ") : "";
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-baseline justify-between gap-2 flex-wrap">
+        <h2 className="text-base font-bold flex items-center gap-2">
+          <CalendarClock size={16} className="text-zinc-500" />
+          Capital gains (FY tally)
+        </h2>
+        <div className="flex items-center gap-3 text-xs text-zinc-500">
+          {data && (
+            <span>
+              FY:{" "}
+              <span className="font-medium">
+                {Array.from(new Set(Object.values(data.fy_by_market))).join(" · ")}
+              </span>
+            </span>
+          )}
+          <button
+            className="btn-ghost text-xs"
+            onClick={() => setShowForm((s) => !s)}
+          >
+            {showForm ? "Hide form" : "+ Add realized gain/loss"}
+          </button>
+        </div>
+      </div>
+
+      {showForm && (
+        <AddRealizedGainForm
+          onSubmit={async (entry) => {
+            try {
+              setFormErr(null);
+              await api.addRealizedGain(entry);
+              qc.invalidateQueries({ queryKey: ["capital-gains"] });
+              setShowForm(false);
+            } catch (e) {
+              setFormErr((e as Error).message);
+            }
+          }}
+          err={formErr}
+        />
+      )}
+
+      {q.isLoading ? (
+        <div className="card p-4 text-sm text-zinc-500 flex items-center gap-2">
+          <Loader2 size={14} className="animate-spin" /> Loading…
+        </div>
+      ) : q.error ? (
+        <EmptyState title="Could not load">{(q.error as Error).message}</EmptyState>
+      ) : data ? (
+        <div className="space-y-3">
+          {data.buckets.length === 0 ? (
+            <div className="card p-4 text-xs text-zinc-500">
+              No realized gains recorded this FY. Add an entry above when you
+              sell a position — the running tally + projected tax will populate
+              here and pair with the tax-loss harvesting panel below.
+            </div>
+          ) : (
+            <>
+              {/* Summary tiles */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="card p-4">
+                  <div className="text-[11px] text-zinc-500 uppercase tracking-wider">
+                    Estimated tax due
+                  </div>
+                  <div className="text-lg font-mono font-semibold text-bear-600">
+                    {totalTaxLine || "—"}
+                  </div>
+                  <div className="text-xs text-zinc-500 mt-0.5">
+                    before harvest offsets
+                  </div>
+                </div>
+                <div className="card p-4">
+                  <div className="text-[11px] text-zinc-500 uppercase tracking-wider">
+                    Harvest could offset
+                  </div>
+                  <div className="text-lg font-mono font-semibold text-bull-600">
+                    {Object.entries(data.harvest_offset_by_currency)
+                      .filter(([, v]) => v > 0)
+                      .map(([sym, v]) => `${sym}${Math.round(v).toLocaleString()}`)
+                      .join(" · ") || "—"}
+                  </div>
+                  <div className="text-xs text-zinc-500 mt-0.5">
+                    from current unrealised losses
+                  </div>
+                </div>
+                <div className="card p-4">
+                  <div className="text-[11px] text-zinc-500 uppercase tracking-wider">
+                    Net tax after harvest
+                  </div>
+                  <div className="text-lg font-mono font-semibold">
+                    {netTaxLine || "—"}
+                  </div>
+                  <div className="text-xs text-zinc-500 mt-0.5">
+                    if you realise every harvestable loss
+                  </div>
+                </div>
+              </div>
+
+              {/* Per-bucket breakdown */}
+              <div className="card overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-zinc-50 dark:bg-zinc-900/50 text-zinc-500 uppercase tracking-wider text-[10px]">
+                    <tr>
+                      <th className="text-left px-3 py-2">Currency</th>
+                      <th className="text-left px-2 py-2">Term</th>
+                      <th className="text-right px-2 py-2">Realised gain</th>
+                      <th className="text-right px-2 py-2">Realised loss</th>
+                      <th className="text-right px-2 py-2">Net</th>
+                      <th className="text-right px-2 py-2">Rate</th>
+                      <th className="text-right px-2 py-2">LTCG exempt</th>
+                      <th className="text-right px-2 py-2">Tax due</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.buckets.map((b) => (
+                      <tr
+                        key={`${b.currency}-${b.term}`}
+                        className="border-t border-zinc-200 dark:border-zinc-800"
+                      >
+                        <td className="px-3 py-1.5 font-mono">{b.currency_symbol} {b.currency}</td>
+                        <td className="px-2 py-1.5">
+                          <span
+                            className={`pill text-[10px] ${
+                              b.term === "long"
+                                ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
+                                : "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                            }`}
+                          >
+                            {b.term === "long" ? "LTCG" : "STCG"}
+                          </span>
+                        </td>
+                        <td className="px-2 py-1.5 text-right tabular-nums text-bull-600">
+                          {b.currency_symbol}{Math.round(b.realized_gain).toLocaleString()}
+                        </td>
+                        <td className="px-2 py-1.5 text-right tabular-nums text-bear-600">
+                          {b.currency_symbol}{Math.round(b.realized_loss).toLocaleString()}
+                        </td>
+                        <td
+                          className={`px-2 py-1.5 text-right tabular-nums font-semibold ${
+                            b.net >= 0 ? "text-bull-600" : "text-bear-600"
+                          }`}
+                        >
+                          {b.net >= 0 ? "+" : ""}
+                          {b.currency_symbol}{Math.round(b.net).toLocaleString()}
+                        </td>
+                        <td className="px-2 py-1.5 text-right tabular-nums">
+                          {(b.tax_rate * 100).toFixed(1)}%
+                        </td>
+                        <td className="px-2 py-1.5 text-right tabular-nums text-zinc-500">
+                          {b.ltcg_exempt_applied > 0
+                            ? `${b.currency_symbol}${Math.round(b.ltcg_exempt_applied).toLocaleString()}`
+                            : "—"}
+                        </td>
+                        <td className="px-2 py-1.5 text-right tabular-nums font-semibold">
+                          {b.currency_symbol}{Math.round(b.est_tax_due_after_exempt).toLocaleString()}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {/* Entries list */}
+          {data.entries.length > 0 && (
+            <div className="card overflow-x-auto">
+              <div className="px-4 py-2 text-[11px] text-zinc-500 uppercase tracking-wider border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40">
+                Realised entries · {data.entries.length}
+              </div>
+              <table className="w-full text-xs">
+                <thead className="text-zinc-500 uppercase tracking-wider text-[10px]">
+                  <tr>
+                    <th className="text-left px-3 py-2">Date</th>
+                    <th className="text-left px-2 py-2">Ticker</th>
+                    <th className="text-right px-2 py-2">Qty</th>
+                    <th className="text-left px-2 py-2">Term</th>
+                    <th className="text-right px-2 py-2">Gain/Loss</th>
+                    <th className="text-left px-3 py-2">Note</th>
+                    <th className="px-2 py-2 w-6"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.entries.map((e) => (
+                    <tr
+                      key={e.id}
+                      className="border-t border-zinc-200 dark:border-zinc-800"
+                    >
+                      <td className="px-3 py-1.5 text-zinc-500">{e.realized_at}</td>
+                      <td className="px-2 py-1.5">
+                        <span className="font-semibold">{e.ticker}</span>
+                        <span className="text-[10px] text-zinc-500 uppercase ml-1.5">
+                          {e.market}
+                        </span>
+                      </td>
+                      <td className="px-2 py-1.5 text-right tabular-nums">{e.qty}</td>
+                      <td className="px-2 py-1.5">
+                        <span
+                          className={`pill text-[10px] ${
+                            e.term === "long"
+                              ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
+                              : "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                          }`}
+                        >
+                          {e.term === "long" ? "LT" : "ST"}
+                        </span>
+                      </td>
+                      <td
+                        className={`px-2 py-1.5 text-right tabular-nums font-semibold ${
+                          e.gain_amount >= 0 ? "text-bull-600" : "text-bear-600"
+                        }`}
+                      >
+                        {e.gain_amount >= 0 ? "+" : ""}
+                        {e.gain_amount.toLocaleString()}
+                      </td>
+                      <td className="px-3 py-1.5 text-zinc-500">{e.note || "—"}</td>
+                      <td className="px-2 py-1.5 text-right">
+                        <button
+                          className="text-zinc-400 hover:text-bear-500 p-1"
+                          onClick={() => remove.mutate(e.id)}
+                          aria-label={`Remove ${e.ticker} entry`}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="text-[11px] text-zinc-400">{data.note}</div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function AddRealizedGainForm({
+  onSubmit,
+  err,
+}: {
+  onSubmit: (entry: import("../types").RealizedGainIn) => void;
+  err: string | null;
+}) {
+  const [ticker, setTicker] = useState("");
+  const [market, setMarket] = useState("NSE");
+  const [qty, setQty] = useState("");
+  const [gain, setGain] = useState("");
+  const [currency, setCurrency] = useState("INR");
+  const [term, setTerm] = useState<"short" | "long">("short");
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [note, setNote] = useState("");
+
+  return (
+    <form
+      className="card p-4 grid grid-cols-2 md:grid-cols-8 gap-2 items-end"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!ticker.trim() || !qty || !gain || !date) return;
+        onSubmit({
+          ticker: ticker.trim().toUpperCase(),
+          market,
+          qty: parseFloat(qty),
+          gain_amount: parseFloat(gain),
+          currency,
+          term,
+          realized_at: date,
+          note: note || "",
+        });
+      }}
+    >
+      <div>
+        <label className="text-[10px] text-zinc-500 mb-1 block">Ticker</label>
+        <input
+          className="input text-sm"
+          value={ticker}
+          onChange={(e) => setTicker(e.target.value)}
+          placeholder="SBIN"
+        />
+      </div>
+      <div>
+        <label className="text-[10px] text-zinc-500 mb-1 block">Market</label>
+        <select className="input text-sm" value={market} onChange={(e) => {
+          setMarket(e.target.value);
+          setCurrency(e.target.value === "US" ? "USD" : e.target.value === "DFM" || e.target.value === "ADX" ? "AED" : "INR");
+        }}>
+          <option value="NSE">NSE</option>
+          <option value="BSE">BSE</option>
+          <option value="US">US</option>
+          <option value="DFM">DFM</option>
+          <option value="ADX">ADX</option>
+        </select>
+      </div>
+      <div>
+        <label className="text-[10px] text-zinc-500 mb-1 block">Qty sold</label>
+        <input
+          className="input text-sm"
+          type="number"
+          step="any"
+          value={qty}
+          onChange={(e) => setQty(e.target.value)}
+        />
+      </div>
+      <div>
+        <label className="text-[10px] text-zinc-500 mb-1 block">Gain / loss</label>
+        <input
+          className="input text-sm"
+          type="number"
+          step="any"
+          value={gain}
+          onChange={(e) => setGain(e.target.value)}
+          placeholder="negative for loss"
+        />
+      </div>
+      <div>
+        <label className="text-[10px] text-zinc-500 mb-1 block">Currency</label>
+        <select className="input text-sm" value={currency} onChange={(e) => setCurrency(e.target.value)}>
+          <option value="INR">INR</option>
+          <option value="USD">USD</option>
+          <option value="AED">AED</option>
+        </select>
+      </div>
+      <div>
+        <label className="text-[10px] text-zinc-500 mb-1 block">Term</label>
+        <select className="input text-sm" value={term} onChange={(e) => setTerm(e.target.value as "short" | "long")}>
+          <option value="short">STCG (≤1y)</option>
+          <option value="long">LTCG (&gt;1y)</option>
+        </select>
+      </div>
+      <div>
+        <label className="text-[10px] text-zinc-500 mb-1 block">Sold on</label>
+        <input className="input text-sm" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+      </div>
+      <div className="md:col-span-1 flex flex-col gap-1">
+        <label className="text-[10px] text-zinc-500 mb-1 block">Note</label>
+        <input
+          className="input text-sm"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="optional"
+        />
+      </div>
+      <div className="col-span-2 md:col-span-8 flex items-center gap-3">
+        <button type="submit" className="btn-primary text-sm">Add entry</button>
+        {err && <div className="text-xs text-bear-500">{err}</div>}
+      </div>
+    </form>
   );
 }
 

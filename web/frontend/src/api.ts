@@ -13,10 +13,13 @@ import type {
   Insights,
   ChainStats,
   CoveredCalls,
+  CapitalGains,
   Discovery,
   DiversificationReport,
   IVSnapshot,
   Performance,
+  RealizedGainIn,
+  RealizedGainOut,
   TaxHarvest,
   LiveQuotes,
   Lookup,
@@ -150,6 +153,15 @@ export const api = {
   diversification: () => request<DiversificationReport>("/insights/diversification"),
 
   taxHarvest: () => request<TaxHarvest>("/insights/tax-harvest"),
+
+  capitalGains: () => request<CapitalGains>("/insights/capital-gains"),
+  addRealizedGain: (entry: RealizedGainIn) =>
+    request<RealizedGainOut>("/insights/capital-gains/entries", {
+      method: "POST",
+      body: JSON.stringify(entry),
+    }),
+  removeRealizedGain: (id: number) =>
+    request<void>(`/insights/capital-gains/entries/${id}`, { method: "DELETE" }),
 
   performance: (period: string) =>
     request<Performance>(`/insights/performance?period=${encodeURIComponent(period)}`),

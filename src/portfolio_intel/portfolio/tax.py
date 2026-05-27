@@ -70,6 +70,108 @@ class HarvestCandidate:
     notes: list[str]
 
 
+def current_fy(market_code: str, today: Optional[date] = None) -> str:
+    """Return the financial-year string for a market.
+
+    India equity: 'YYYY-YY' starting April 1.
+    US equity: 'YYYY' (calendar year).
+    """
+    today = today or date.today()
+    if market_code in ("NSE", "BSE"):
+        if today.month >= 4:
+            return f"{today.year}-{(today.year + 1) % 100:02d}"
+        return f"{today.year - 1}-{today.year % 100:02d}"
+    return str(today.year)
+
+
+@dataclass
+class FYBucket:
+    """Realized-gain totals for one (currency, term) bucket within an FY."""
+    currency: str
+    currency_symbol: str
+    term: str                       # "short" | "long"
+    realized_gain: float            # sum (can be negative if losses)
+    realized_loss: float            # absolute value of negative entries
+    net: float                      # gain + loss (i.e. signed sum)
+    n_entries: int
+    tax_rate: float
+    est_tax_due: float              # before harvest offset and exemption
+    ltcg_exempt_applied: float = 0.0  # India only: ₹1.25L exempted from LTCG
+    est_tax_due_after_exempt: float = 0.0
+
+
+def summarise_realized_gains(
+    entries: Iterable[dict],
+    *,
+    currency_symbols: Optional[dict[str, str]] = None,
+    ltcg_exempt_inr: float = 125_000.0,
+) -> list[FYBucket]:
+    """Aggregate realized-gain records into (currency, term) buckets with
+    estimated tax due.
+
+    Each entry must have: currency, term, gain_amount.
+    Indian LTCG exemption of ₹1.25L is applied per FY per currency=INR
+    bucket (term=long). All other buckets get the bucket's bare rate.
+    """
+    currency_symbols = currency_symbols or {}
+    # Index by (currency, term) → running aggregates.
+    agg: dict[tuple[str, str], dict] = {}
+    for e in entries:
+        cur = (e.get("currency") or "").upper()
+        term = (e.get("term") or "").lower()
+        amt = float(e.get("gain_amount") or 0.0)
+        if term not in ("short", "long"):
+            continue
+        slot = agg.setdefault((cur, term), {
+            "realized_gain": 0.0, "realized_loss": 0.0,
+            "net": 0.0, "n_entries": 0,
+        })
+        if amt >= 0:
+            slot["realized_gain"] += amt
+        else:
+            slot["realized_loss"] += abs(amt)
+        slot["net"] += amt
+        slot["n_entries"] += 1
+
+    out: list[FYBucket] = []
+    for (cur, term), v in sorted(agg.items()):
+        if cur == "INR":
+            rate = RATES_INDIA.short_term if term == "short" else RATES_INDIA.long_term
+        elif cur == "USD":
+            rate = RATES_US.short_term if term == "short" else RATES_US.long_term
+        else:
+            rate = RATES_DEFAULT.short_term if term == "short" else RATES_DEFAULT.long_term
+
+        net = v["net"]
+        # Tax only on positive net (losses don't generate tax owed; they
+        # offset gains in the harvest panel).
+        taxable = max(0.0, net)
+        est_due = taxable * rate
+
+        # India LTCG: first ₹1.25L of LT capital gains is exempt.
+        exempt_applied = 0.0
+        if cur == "INR" and term == "long" and taxable > 0:
+            exempt_applied = min(taxable, ltcg_exempt_inr)
+            est_due_after = max(0.0, taxable - ltcg_exempt_inr) * rate
+        else:
+            est_due_after = est_due
+
+        out.append(FYBucket(
+            currency=cur,
+            currency_symbol=currency_symbols.get(cur, cur),
+            term=term,
+            realized_gain=v["realized_gain"],
+            realized_loss=v["realized_loss"],
+            net=net,
+            n_entries=v["n_entries"],
+            tax_rate=rate,
+            est_tax_due=est_due,
+            ltcg_exempt_applied=exempt_applied,
+            est_tax_due_after_exempt=est_due_after,
+        ))
+    return out
+
+
 def find_harvest_candidates(
     rows: Iterable[tuple],            # (Holding, market_value, price)
     *,
