@@ -270,6 +270,45 @@ class BreezeClient:
         out.sort(key=lambda c: (c.strike_price, 0 if c.right == "call" else 1))
         return out
 
+    def debug_probe(
+        self,
+        *,
+        stock_code: str,
+        candidates: list[date],
+    ) -> list[dict]:
+        """Diagnostic: return the raw shape of Breeze's response for every
+        candidate date, so we can see WHY a given date didn't come through
+        the regular probe. Read-only and bounded by the candidate count."""
+        out: list[dict] = []
+        for d in candidates:
+            entry: dict = {"date": d.isoformat(), "weekday": d.strftime("%A")}
+            try:
+                resp = self._sdk.get_option_chain_quotes(
+                    stock_code=stock_code,
+                    exchange_code="NFO",
+                    product_type="options",
+                    expiry_date=_breeze_expiry(d),
+                    right="call",
+                )
+                if not isinstance(resp, dict):
+                    entry["shape"] = type(resp).__name__
+                    entry["status"] = "non-dict response"
+                else:
+                    err = resp.get("Error") or resp.get("error")
+                    records = resp.get("Success") or resp.get("success") or []
+                    entry["error"] = err
+                    entry["records_count"] = len(records) if isinstance(records, list) else None
+                    entry["status_code"] = resp.get("Status") or resp.get("status")
+                    entry["keys"] = sorted(resp.keys())
+                    if isinstance(records, list) and records:
+                        entry["sample"] = records[0]
+                    entry["status"] = "ok" if (isinstance(records, list) and records) else "empty"
+            except Exception as e:
+                entry["exception"] = f"{type(e).__name__}: {str(e)[:200]}"
+                entry["status"] = "exception"
+            out.append(entry)
+        return out
+
     def find_available_expiries(
         self,
         *,

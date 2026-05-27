@@ -153,6 +153,46 @@ class ProbeOut(BaseModel):
     )
 
 
+@router.get("/expiries/debug")
+def expiries_debug(
+    symbol: str = Query(...),
+    broker_code: Optional[str] = Query(None),
+    months: int = Query(3, ge=1, le=6),
+) -> dict:
+    """Diagnostic: for each candidate expiry, return the raw Breeze
+    response shape (records count, error, keys, sample). Use this to
+    figure out why a date that exists in ICICI Direct isn't appearing
+    in the probe."""
+    store = get_store()
+    cfg = store.broker_get(_BROKER)
+    if not cfg or not cfg.get("session_token"):
+        raise HTTPException(status_code=400, detail="ICICI Breeze not connected.")
+
+    bare_symbol, _ = parse_ticker(symbol, default_market=Market.NSE)
+    learned_code = store.broker_code_get(_BROKER, bare_symbol)
+    seed_code = seed_broker_code(bare_symbol)
+    underlying_code = (broker_code or learned_code or seed_code or bare_symbol).upper()
+
+    candidates = candidate_expiries(months=months)
+    try:
+        client = BreezeClient(cfg["api_key"])
+        client.connect(cfg["api_secret"], cfg["session_token"])
+        results = client.debug_probe(stock_code=underlying_code, candidates=candidates)
+    except BreezeNotInstalled as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except BreezeSessionExpired as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except BreezeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    return {
+        "underlying_symbol": bare_symbol,
+        "underlying_broker_code": underlying_code,
+        "candidates_count": len(candidates),
+        "results": results,
+    }
+
+
 @router.get("/expiries/probe", response_model=ProbeOut)
 def expiries_probe(
     symbol: str = Query(..., description="NSE bare ticker OR ICICI broker code"),
