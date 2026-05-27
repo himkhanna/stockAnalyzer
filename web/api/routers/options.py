@@ -24,7 +24,7 @@ from portfolio_intel.brokers import (
     BreezeNotInstalled,
     BreezeSessionExpired,
 )
-from portfolio_intel.markets import Market
+from portfolio_intel.markets import Market, parse_ticker
 from portfolio_intel.options import (
     DEFAULT_DIVIDEND_YIELD,
     DEFAULT_RISK_FREE_IN,
@@ -138,7 +138,10 @@ def chain(
             detail="ICICI Breeze not connected. Connect via Portfolio → ICICI Direct sync.",
         )
 
-    underlying_code = (broker_code or symbol).upper()
+    # Strip any yfinance suffix (.NS / .BO) before handing to Breeze — it
+    # rejects qualified symbols with a generic "Error while calling service".
+    bare_symbol, _ = parse_ticker(symbol, default_market=Market.NSE)
+    underlying_code = (broker_code or bare_symbol).upper()
 
     try:
         client = BreezeClient(cfg["api_key"])
@@ -149,12 +152,26 @@ def chain(
     except BreezeSessionExpired as e:
         raise HTTPException(status_code=401, detail=str(e))
     except BreezeError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        msg = str(e)
+        low = msg.lower()
+        # Breeze's "T10:56 / contact admin" almost always means the stock_code
+        # doesn't resolve to an F&O underlying on their side. Suggest the most
+        # common fix instead of bouncing their raw message to the user.
+        if "contact admin" in low or "t10:56" in low or "calling service" in low:
+            hint = (
+                f"Breeze couldn't resolve '{underlying_code}' as an F&O "
+                "underlying. Try the ICICI broker code instead (e.g. RELIND "
+                "for RELIANCE, EXIIND for EXIDEIND, STABAN for SBIN). For "
+                "indices use NIFTY / BANKNIFTY / FINNIFTY."
+            )
+            raise HTTPException(status_code=502, detail=f"{hint} (Breeze: {msg})")
+        raise HTTPException(status_code=502, detail=msg)
 
-    # Best-effort underlying spot price via yfinance.
+    # Best-effort underlying spot price via yfinance — use the bare symbol;
+    # the source re-adds the market suffix internally.
     spot: Optional[float] = None
     try:
-        q = get_source().get_quote(symbol.upper(), Market.NSE)
+        q = get_source().get_quote(bare_symbol, Market.NSE)
         spot = float(q.price)
     except Exception:
         spot = None
@@ -195,7 +212,7 @@ def chain(
         ))
 
     return ChainOut(
-        underlying_symbol=symbol.upper(),
+        underlying_symbol=bare_symbol,
         underlying_broker_code=underlying_code,
         spot=spot,
         expiry=expiry_date.isoformat(),
