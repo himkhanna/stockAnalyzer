@@ -11,7 +11,7 @@ import os
 import pickle
 import threading
 import time as _time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
