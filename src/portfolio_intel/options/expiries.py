@@ -55,25 +55,35 @@ def candidate_expiries(months: int = 3, ref: date | None = None) -> list[date]:
     """Plausible monthly expiry dates to probe for an underlying.
 
     NSE has shifted several products' expiry day-of-week over recent SEBI
-    cycles (last-Thursday is the historic rule, last-Tuesday is the newer
-    one for some index products, and brokers occasionally surface the
-    settlement date which is +1/+2 business days). Rather than encode the
-    full ruleset, we list every plausible last-week-of-month date and let
-    Breeze tell us which ones actually have contracts.
+    cycles (the historic last-Thursday rule, last-Tuesday for current
+    stock-option monthlies after the 2025 shift). Brokers also sometimes
+    surface the settlement date a day or two after expiry. Rather than
+    encode the full ruleset, we generate the LAST OCCURRENCE of each
+    weekday (Mon-Fri) within the month for `months` upcoming cycles and
+    let Breeze tell us which ones actually have contracts.
 
-    Returns sorted unique dates >= ref for each of the next `months`
-    monthly cycles, covering Monday through Friday of the last week.
+    Critically the last-Tuesday of a month can fall AFTER the last
+    Thursday (e.g. June 2026: last Thu = Jun 25, last Tue = Jun 30),
+    so we must search the entire month, not just the week containing
+    the last Thursday.
+
+    Returns sorted unique dates >= ref.
     """
     ref = ref or date.today()
     out: set[date] = set()
     y, m = ref.year, ref.month
     for _ in range(months):
-        # Anchor on the last Thursday, then take Mon-Fri of that week.
-        thu = last_thursday_of_month(y, m)
-        # Walk from Monday (weekday 0) to Friday (weekday 4) in that week.
-        monday = thu - timedelta(days=thu.weekday())
-        for delta in range(0, 5):
-            d = monday + timedelta(days=delta)
+        if m == 12:
+            first_next = date(y + 1, 1, 1)
+        else:
+            first_next = date(y, m + 1, 1)
+        last_day = first_next - timedelta(days=1)
+        # For each weekday Mon (0) through Fri (4), find the last
+        # occurrence in the month by walking back from last_day.
+        for target_wd in range(0, 5):
+            d = last_day
+            while d.weekday() != target_wd:
+                d -= timedelta(days=1)
             if d >= ref:
                 out.add(d)
         m += 1
