@@ -49,28 +49,97 @@ export function InsightsPage() {
   }
 
   const d = q.data;
+  return <InsightsLoaded data={d} />;
+}
+
+type InsightsTab = "pulse" | "performance" | "opportunities" | "watchlist";
+
+const _TABS: { key: InsightsTab; label: string; hint: string }[] = [
+  { key: "pulse", label: "Pulse", hint: "what just happened" },
+  { key: "performance", label: "Performance", hint: "how your portfolio is doing" },
+  { key: "opportunities", label: "Opportunities", hint: "what to do next" },
+  { key: "watchlist", label: "Watchlist", hint: "tickers you don't own" },
+];
+
+const _TAB_STORAGE_KEY = "pi.insights.tab";
+
+function InsightsLoaded({ data: d }: { data: ReturnType<typeof api.getInsights> extends Promise<infer T> ? T : never }) {
+  // Remember the last tab across reloads — quality-of-life thing.
+  const [tab, setTab] = useState<InsightsTab>(() => {
+    if (typeof window === "undefined") return "pulse";
+    const saved = window.localStorage.getItem(_TAB_STORAGE_KEY);
+    return (saved as InsightsTab) || "pulse";
+  });
+  const pickTab = (t: InsightsTab) => {
+    setTab(t);
+    try {
+      window.localStorage.setItem(_TAB_STORAGE_KEY, t);
+    } catch {
+      /* ignore */
+    }
+  };
 
   return (
-    <div className="space-y-8 pb-12">
-      <header className="space-y-1">
-        <h1 className="text-xl font-bold">Insights</h1>
-        <p className="text-xs text-zinc-500 flex items-center gap-2 flex-wrap">
-          <LastRefreshed at={d.generated_at} label="generated" />
-          <span>· {d.note}</span>
-        </p>
+    <div className="space-y-6 pb-12">
+      <header className="space-y-3">
+        <div className="flex items-baseline gap-3 flex-wrap">
+          <h1 className="text-xl font-bold">Insights</h1>
+          <p className="text-xs text-zinc-500 flex items-center gap-2 flex-wrap">
+            <LastRefreshed at={d.generated_at} label="generated" />
+            <span>· {d.note}</span>
+          </p>
+        </div>
+        <nav className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800 overflow-x-auto">
+          {_TABS.map((t) => {
+            const active = tab === t.key;
+            return (
+              <button
+                key={t.key}
+                onClick={() => pickTab(t.key)}
+                className={`px-3 py-2 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${
+                  active
+                    ? "border-zinc-900 dark:border-zinc-100 text-zinc-900 dark:text-zinc-100"
+                    : "border-transparent text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+                }`}
+                title={t.hint}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </nav>
       </header>
 
-      <AlertsSection />
-      <PerformanceSection />
-      <TaxHarvestSection />
-      <DiversificationSection />
-      <DiscoverSection />
-      <MarketPulse indices={d.indices} />
-      <ConvictionBoard rows={d.conviction} />
-      <WatchlistSection scanned={d.watchlist} />
-      <SignalChangesPanel changes={d.signal_changes} />
-      <EarningsPanel items={d.upcoming_earnings} />
-      <RiskView risk={d.risk} />
+      {tab === "pulse" && (
+        <div className="space-y-8">
+          <AlertsSection />
+          <MarketPulse indices={d.indices} />
+          <SignalChangesPanel changes={d.signal_changes} />
+          <EarningsPanel items={d.upcoming_earnings} />
+        </div>
+      )}
+
+      {tab === "performance" && (
+        <div className="space-y-8">
+          <PerformanceSection />
+          <ConvictionBoard rows={d.conviction} />
+          <RiskView risk={d.risk} />
+        </div>
+      )}
+
+      {tab === "opportunities" && (
+        <div className="space-y-8">
+          <TaxHarvestSection />
+          <DiversificationSection />
+          <DiscoverSection />
+        </div>
+      )}
+
+      {tab === "watchlist" && (
+        <div className="space-y-8">
+          <WatchlistSection scanned={d.watchlist} />
+        </div>
+      )}
     </div>
   );
 }
