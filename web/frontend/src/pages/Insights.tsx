@@ -369,6 +369,7 @@ function AddInstrumentButton({
     onSuccess: () => {
       setAdded(true);
       qc.invalidateQueries({ queryKey: ["watchlist"] });
+      qc.invalidateQueries({ queryKey: ["insights"] });
     },
     onError: (e: Error) => {
       const msg = e.message.toLowerCase();
@@ -838,59 +839,132 @@ function WatchlistSection({ scanned }: { scanned: any[] }) {
         )}
       </form>
 
-      {list.data && list.data.length > 0 && (
-        <div className="card overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-zinc-50 dark:bg-zinc-900/50 text-zinc-500 text-xs uppercase tracking-wider">
-              <tr>
-                <th className="text-left px-4 py-2.5 font-semibold">Ticker</th>
-                <th className="text-left px-4 py-2.5 font-semibold">Market</th>
-                <th className="text-left px-4 py-2.5 font-semibold">Note</th>
-                <th className="text-left px-4 py-2.5 font-semibold">Added</th>
-                <th className="px-4 py-2.5"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {list.data.map((w) => (
-                <tr
-                  key={`${w.ticker}.${w.market}`}
-                  className="border-t border-zinc-200 dark:border-zinc-800"
-                >
-                  <td className="px-4 py-2.5 font-semibold">{w.ticker}</td>
-                  <td className="px-4 py-2.5 text-zinc-500 text-xs uppercase">{w.market}</td>
-                  <td className="px-4 py-2.5 text-zinc-500">{w.note || "—"}</td>
-                  <td className="px-4 py-2.5 text-zinc-500 text-xs">{w.date_added}</td>
-                  <td className="px-4 py-2.5 text-right">
-                    <button
-                      className="text-zinc-400 hover:text-bear-500 p-1"
-                      onClick={() => remove.mutate(w)}
-                      aria-label={`Remove ${w.ticker}`}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {scanned.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-          {scanned.map((r) => (
-            <StockCard key={`wl-${r.symbol}.${r.market}`} row={r} />
-          ))}
-        </div>
-      )}
-
-      {list.data && list.data.length === 0 && (
+      {list.data && list.data.length > 0 ? (
+        <WatchlistTable
+          entries={list.data}
+          scanned={scanned}
+          onRemove={(w) => remove.mutate(w)}
+        />
+      ) : list.data ? (
         <EmptyState title="Watchlist is empty">
           Add a ticker above to scan it with the same scoring engine the
           dashboard uses.
         </EmptyState>
-      )}
+      ) : null}
     </section>
+  );
+}
+
+function WatchlistTable({
+  entries,
+  scanned,
+  onRemove,
+}: {
+  entries: WatchlistItem[];
+  scanned: any[];
+  onRemove: (w: WatchlistItem) => void;
+}) {
+  // Merge raw entries with scored cards so each row carries everything.
+  const scannedByKey = new Map<string, any>(
+    scanned.map((s) => [`${(s.symbol ?? "").toUpperCase()}.${(s.market ?? "").toUpperCase()}`, s]),
+  );
+  const pendingCount = entries.filter(
+    (w) => !scannedByKey.get(`${w.ticker.toUpperCase()}.${w.market.toUpperCase()}`),
+  ).length;
+
+  return (
+    <div className="card overflow-x-auto">
+      {pendingCount > 0 && (
+        <div className="px-4 py-2 text-[11px] text-zinc-500 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 flex items-center gap-2">
+          <Loader2 size={12} className="animate-spin" />
+          {pendingCount} new entr{pendingCount === 1 ? "y" : "ies"} — price &
+          signal will appear after the next Insights refresh.
+        </div>
+      )}
+      <table className="w-full text-sm">
+        <thead className="bg-zinc-50 dark:bg-zinc-900/50 text-zinc-500 text-[10px] uppercase tracking-wider">
+          <tr>
+            <th className="text-left px-3 py-2">Ticker</th>
+            <th className="text-right px-2 py-2">Price</th>
+            <th className="text-right px-2 py-2">Day</th>
+            <th className="text-left px-2 py-2">Signal</th>
+            <th className="text-right px-2 py-2">RSI</th>
+            <th className="text-left px-2 py-2">Trend</th>
+            <th className="text-left px-3 py-2">Note</th>
+            <th className="text-left px-2 py-2">Added</th>
+            <th className="px-2 py-2 w-6"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map((w) => {
+            const key = `${w.ticker.toUpperCase()}.${w.market.toUpperCase()}`;
+            const s = scannedByKey.get(key);
+            const price = s?.price as number | null | undefined;
+            const change = s?.change_pct as number | null | undefined;
+            const err = s?.error as string | null | undefined;
+            return (
+              <tr
+                key={key}
+                className="border-t border-zinc-200 dark:border-zinc-800"
+              >
+                <td className="px-3 py-1.5">
+                  <div className="font-semibold">{w.ticker}</div>
+                  <div className="text-[10px] text-zinc-500 uppercase">
+                    {w.market}
+                  </div>
+                </td>
+                <td className="px-2 py-1.5 text-right tabular-nums font-mono">
+                  {price != null
+                    ? `${s.currency_symbol ?? ""}${price.toFixed(2)}`
+                    : err
+                    ? <span className="text-bear-500 text-[11px]" title={err}>err</span>
+                    : <span className="text-zinc-400">—</span>}
+                </td>
+                <td
+                  className={`px-2 py-1.5 text-right tabular-nums text-xs ${
+                    (change ?? 0) > 0
+                      ? "text-bull-500"
+                      : (change ?? 0) < 0
+                      ? "text-bear-500"
+                      : "text-zinc-500"
+                  }`}
+                >
+                  {change != null ? fmtPct(change, 1) : "—"}
+                </td>
+                <td className="px-2 py-1.5">
+                  {s?.score_label ? (
+                    <SignalPill label={s.score_label} score={s.score_value} compact />
+                  ) : (
+                    <span className="text-zinc-400 text-xs">—</span>
+                  )}
+                </td>
+                <td className="px-2 py-1.5 text-right tabular-nums text-xs">
+                  {s?.rsi != null ? s.rsi.toFixed(0) : "—"}
+                </td>
+                <td className="px-2 py-1.5 text-xs text-zinc-600 dark:text-zinc-400">
+                  {s?.trend ?? "—"}
+                </td>
+                <td className="px-3 py-1.5 text-zinc-500 text-xs">
+                  {w.note || "—"}
+                </td>
+                <td className="px-2 py-1.5 text-zinc-500 text-[11px]">
+                  {w.date_added}
+                </td>
+                <td className="px-2 py-1.5 text-right">
+                  <button
+                    className="text-zinc-400 hover:text-bear-500 p-1"
+                    onClick={() => onRemove(w)}
+                    aria-label={`Remove ${w.ticker}`}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
