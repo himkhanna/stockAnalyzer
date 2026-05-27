@@ -3,11 +3,12 @@ import {
   ChevronRight,
   Loader2,
   Plus,
+  RefreshCw,
   Sparkles,
   Trash2,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bar,
   BarChart,
@@ -101,6 +102,16 @@ function ChainSection({
     staleTime: 60 * 60 * 1000, // 1h — backend already caches per-day
     retry: false,
   });
+  const qc = useQueryClient();
+  const rescanProbe = useMutation({
+    mutationFn: () => api.optionExpiriesProbe(symbol.trim(), brokerCode.trim() || undefined, true),
+    onSuccess: (data) => {
+      qc.setQueryData(
+        ["option-expiries-probe", symbol.trim().toUpperCase(), brokerCode.trim().toUpperCase()],
+        data,
+      );
+    },
+  });
 
   const fallback = useQuery({
     queryKey: ["option-expiries"],
@@ -173,14 +184,24 @@ function ChainSection({
           />
         </div>
         <div className="md:col-span-3">
-          <label className="text-xs text-zinc-500 mb-1 block">
-            Expiry{" "}
-            {probe.isFetching && (
+          <label className="text-xs text-zinc-500 mb-1 block flex items-center gap-1.5">
+            <span>Expiry</span>
+            {(probe.isFetching || rescanProbe.isPending) && (
               <Loader2 size={10} className="inline animate-spin text-zinc-400" />
             )}
-            {probe.data && !probe.isFetching && (
+            {probe.data && !probe.isFetching && !rescanProbe.isPending && (
               <span className="text-zinc-400">· verified</span>
             )}
+            <button
+              type="button"
+              className="ml-auto text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+              onClick={() => rescanProbe.mutate()}
+              disabled={rescanProbe.isPending || !symbol.trim()}
+              title="Re-probe Breeze (bypass cache)"
+              aria-label="Rescan expiries"
+            >
+              <RefreshCw size={11} />
+            </button>
           </label>
           <select
             className="input"

@@ -46,9 +46,12 @@ from ..state import get_source, get_store
 router = APIRouter()
 _BROKER = "icici_breeze"
 
-# Cache key: (broker_stock_code, today). Per-symbol, per-day. Cleared on
-# process restart, which is the right TTL for an expiry calendar.
-_PROBE_CACHE: dict[tuple[str, str], list[str]] = {}
+# Cache key: (probe_version, broker_stock_code, today). Per-symbol,
+# per-day, per-candidate-generator-version. Bumping _PROBE_VERSION
+# invalidates caches when we change the set of candidate dates we test
+# (e.g. when NSE shifted stock-option expiries to last-Tuesday).
+_PROBE_VERSION = 2
+_PROBE_CACHE: dict[tuple[int, str, str], list[str]] = {}
 
 # Short-lived chain cache. The Options page can fire 3+ chain-dependent
 # queries in parallel (chain table, IV snapshot, covered calls, chain
@@ -155,6 +158,7 @@ def expiries_probe(
     symbol: str = Query(..., description="NSE bare ticker OR ICICI broker code"),
     broker_code: Optional[str] = Query(None),
     months: int = Query(3, ge=1, le=6, description="How many monthly cycles to probe"),
+    refresh: bool = Query(False, description="Skip the cache and re-probe Breeze now"),
 ) -> ProbeOut:
     """Ask Breeze which expiry dates actually have contracts for the
     underlying. Probes every Mon-Fri of the last week of the next
@@ -172,8 +176,8 @@ def expiries_probe(
     seed_code = seed_broker_code(bare_symbol)
     underlying_code = (broker_code or learned_code or seed_code or bare_symbol).upper()
 
-    cache_key = (underlying_code, date.today().isoformat())
-    if cache_key in _PROBE_CACHE:
+    cache_key = (_PROBE_VERSION, underlying_code, date.today().isoformat())
+    if not refresh and cache_key in _PROBE_CACHE:
         return ProbeOut(
             underlying_symbol=bare_symbol,
             underlying_broker_code=underlying_code,

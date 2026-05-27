@@ -207,9 +207,10 @@ export const api = {
   iciciSyncPreview: () =>
     request<SyncPreview>("/brokers/icici/sync/preview", { method: "POST" }),
   optionExpiries: () => request<OptionExpiries>("/options/expiries"),
-  optionExpiriesProbe: (symbol: string, brokerCode?: string) => {
+  optionExpiriesProbe: (symbol: string, brokerCode?: string, refresh = false) => {
     const params = new URLSearchParams({ symbol });
     if (brokerCode) params.set("broker_code", brokerCode);
+    if (refresh) params.set("refresh", "true");
     return request<OptionExpiriesProbe>(
       `/options/expiries/probe?${params.toString()}`,
     );
