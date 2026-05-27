@@ -460,10 +460,9 @@ function IVSmilePanel({
     staleTime: 5 * 60 * 1000,
     retry: false,
   });
+  const points = useMemo(() => extractSmile(q.data), [q.data]);
 
   if (!symbol.trim() || !expiry) return null;
-
-  const points = useMemo(() => extractSmile(q.data), [q.data]);
   if (!q.data && !q.isFetching) return null;
 
   return (
