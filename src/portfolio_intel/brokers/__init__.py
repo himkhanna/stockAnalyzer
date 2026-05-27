@@ -13,6 +13,7 @@ from .icici_breeze import (
     BreezeSessionExpired,
     BrokerHolding,
 )
+from .icici_codes import seed_broker_code
 
 __all__ = [
     "BreezeClient",
@@ -21,4 +22,5 @@ __all__ = [
     "BreezeNotConnected",
     "BreezeSessionExpired",
     "BrokerHolding",
+    "seed_broker_code",
 ]

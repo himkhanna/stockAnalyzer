@@ -23,6 +23,7 @@ from portfolio_intel.brokers import (
     BreezeError,
     BreezeNotInstalled,
     BreezeSessionExpired,
+    seed_broker_code,
 )
 from portfolio_intel.markets import Market, parse_ticker
 from portfolio_intel.options import (
@@ -143,9 +144,11 @@ def chain(
     # rejects qualified symbols with a generic "Error while calling service".
     bare_symbol, _ = parse_ticker(symbol, default_market=Market.NSE)
 
-    # Resolution order: explicit override → learned dictionary → bare symbol.
+    # Resolution order:
+    #   explicit override → learned DB dictionary → curated seed map → bare.
     learned_code = store.broker_code_get(_BROKER, bare_symbol)
-    underlying_code = (broker_code or learned_code or bare_symbol).upper()
+    seed_code = seed_broker_code(bare_symbol)
+    underlying_code = (broker_code or learned_code or seed_code or bare_symbol).upper()
 
     try:
         client = BreezeClient(cfg["api_key"])
