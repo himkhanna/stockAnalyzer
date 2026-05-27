@@ -11,6 +11,7 @@ import type {
   HoldingIn,
   ImportResult,
   Insights,
+  LiveQuotes,
   Lookup,
   OptionChain,
   OptionExpiries,
@@ -138,6 +139,8 @@ export const api = {
   },
 
   getInsights: () => request<Insights>("/insights"),
+
+  liveQuotes: () => request<LiveQuotes>("/quotes/live"),
 
   runBacktest: (symbol: string, market: string) =>
     request<Backtest>(

@@ -25,6 +25,7 @@ from .routers import holdings as holdings_router
 from .routers import insights as insights_router
 from .routers import lookup as lookup_router
 from .routers import portfolio as portfolio_router
+from .routers import quotes as quotes_router
 from .routers import search as search_router
 from .routers import watchlist as watchlist_router
 
@@ -62,6 +63,7 @@ app.include_router(backtest_router.router, prefix="/api/backtest", tags=["backte
 app.include_router(alerts_router.router, prefix="/api/alerts", tags=["alerts"])
 app.include_router(brokers_router.router, prefix="/api/brokers", tags=["brokers"])
 app.include_router(options_router.router, prefix="/api/options", tags=["options"])
+app.include_router(quotes_router.router, prefix="/api/quotes/live", tags=["quotes"])
 
 
 @app.get("/api/health")

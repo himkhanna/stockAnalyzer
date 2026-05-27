@@ -269,6 +269,24 @@ export interface OptionExpiries {
   weekly: string[];
 }
 
+export interface LiveQuote {
+  symbol: string;
+  market: string;
+  currency_symbol: string;
+  price: number;
+  previous_close: number | null;
+  change: number | null;
+  change_pct: number | null;
+  market_open: boolean;
+  as_of: string;
+}
+
+export interface LiveQuotes {
+  quotes: LiveQuote[];
+  any_market_open: boolean;
+  cached: boolean;
+}
+
 export interface OptionExpiriesProbe {
   underlying_symbol: string;
   underlying_broker_code: string;

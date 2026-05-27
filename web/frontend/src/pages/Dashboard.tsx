@@ -1,4 +1,4 @@
-import { AlertTriangle, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -6,12 +6,10 @@ import { api } from "../api";
 import { DigestModal } from "../components/DigestModal";
 import { EmptyState } from "../components/EmptyState";
 import { FilterBar, type FilterState, type SortKey } from "../components/FilterBar";
-import { KPITiles } from "../components/KPITiles";
-import { StockCard } from "../components/StockCard";
+import { HoldingsTable } from "../components/HoldingsTable";
+import { KPIStrip } from "../components/KPIStrip";
 import { signalRank } from "../lib/format";
-import type { CardRow, SignalLabel } from "../types";
-
-const SELL_SIGNALS = new Set<SignalLabel>(["Strong Sell", "Sell"]);
+import type { CardRow, LiveQuote } from "../types";
 
 interface Props {
   onLoadedAt: (s: string) => void;
@@ -23,6 +21,27 @@ export function Dashboard({ onLoadedAt }: Props) {
     queryKey: ["dashboard"],
     queryFn: () => api.getDashboard(),
   });
+
+  // Live quote overlay. We start polling at 30s and only keep polling if
+  // the server reports any market open. When the holdings list is empty,
+  // skip the call entirely.
+  const live = useQuery({
+    queryKey: ["live-quotes"],
+    queryFn: api.liveQuotes,
+    enabled: !!q.data && (q.data.rows?.length ?? 0) > 0,
+    refetchInterval: (query) =>
+      query.state.data?.any_market_open ? 30_000 : false,
+    refetchOnWindowFocus: true,
+    staleTime: 15_000,
+  });
+
+  const liveByKey = useMemo<Record<string, LiveQuote | undefined>>(() => {
+    const map: Record<string, LiveQuote | undefined> = {};
+    for (const q of live.data?.quotes ?? []) {
+      map[`${q.symbol}.${q.market}`] = q;
+    }
+    return map;
+  }, [live.data]);
 
   const [openDigest, setOpenDigest] = useState<{ symbol: string; market: string } | null>(null);
   const [filters, setFilters] = useState<FilterState>({
@@ -39,27 +58,6 @@ export function Dashboard({ onLoadedAt }: Props) {
   }
 
   const rows = q.data?.rows ?? [];
-
-  const attention = useMemo(() => {
-    const out: CardRow[] = [];
-    const seen = new Set<string>();
-    const k = (r: CardRow) => `${r.symbol}.${r.market}`;
-    for (const r of rows) {
-      if (r.error) continue;
-      if (r.score_label && SELL_SIGNALS.has(r.score_label) && !seen.has(k(r))) {
-        seen.add(k(r));
-        out.push(r);
-      }
-    }
-    for (const r of rows) {
-      if (r.error) continue;
-      if (r.overweight && !seen.has(k(r))) {
-        seen.add(k(r));
-        out.push(r);
-      }
-    }
-    return out.slice(0, 6);
-  }, [rows]);
 
   const filtered = useMemo(() => {
     let xs = rows.slice();
@@ -110,66 +108,40 @@ export function Dashboard({ onLoadedAt }: Props) {
   }
 
   return (
-    <div className="space-y-6 pb-12">
-      <KPITiles
+    <div className="space-y-4 pb-12">
+      <KPIStrip
         buckets={q.data.buckets}
         signalCounts={q.data.signal_counts}
         overweight={q.data.overweight_count}
-        winners={q.data.winners_count}
-        losers={q.data.losers_count}
       />
 
-      {attention.length > 0 && (
-        <section className="space-y-3">
-          <div className="flex items-baseline justify-between">
-            <h2 className="text-base font-bold flex items-center gap-2">
-              <AlertTriangle size={16} className="text-bear-500" />
-              Needs attention
-            </h2>
-            <span className="text-xs text-zinc-500">
-              {attention.length} holding{attention.length !== 1 && "s"} — sells &amp; overweight first
-            </span>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {attention.map((r) => (
-              <StockCard
-                key={`attn-${r.symbol}-${r.market}`}
-                row={r}
-                attention
-                onOpenDigest={(row) => setOpenDigest({ symbol: row.symbol, market: row.market })}
-              />
-            ))}
-          </div>
-        </section>
+      <FilterBar
+        state={filters}
+        onChange={setFilters}
+        total={rows.length}
+        shown={filtered.length}
+      />
+
+      {filtered.length === 0 ? (
+        <EmptyState title="No holdings match the filters">
+          Clear or adjust the filters above.
+        </EmptyState>
+      ) : (
+        <HoldingsTable
+          rows={filtered}
+          liveByKey={liveByKey}
+          onOpenDigest={(row) => setOpenDigest({ symbol: row.symbol, market: row.market })}
+        />
       )}
 
-      <section className="space-y-3">
-        <div className="flex items-baseline justify-between">
-          <h2 className="text-base font-bold">All holdings</h2>
-          <span className="text-xs text-zinc-500">filters apply instantly · no refetch</span>
+      {live.data?.any_market_open && (
+        <div className="text-[11px] text-zinc-400 text-right">
+          live quotes · refreshing every 30s
+          {live.isFetching && (
+            <Loader2 size={10} className="inline ml-1 animate-spin" />
+          )}
         </div>
-        <FilterBar
-          state={filters}
-          onChange={setFilters}
-          total={rows.length}
-          shown={filtered.length}
-        />
-        {filtered.length === 0 ? (
-          <EmptyState title="No holdings match the filters">
-            Clear or adjust the filters above.
-          </EmptyState>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {filtered.map((r) => (
-              <StockCard
-                key={`grid-${r.symbol}-${r.market}`}
-                row={r}
-                onOpenDigest={(row) => setOpenDigest({ symbol: row.symbol, market: row.market })}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+      )}
 
       {openDigest && (
         <DigestModal
