@@ -856,8 +856,10 @@ def capital_gains(
 ) -> CapitalGainsOut:
     """Aggregate realized gains for the current FY + projected tax,
     plus the offset available from currently-unrealised losses (the
-    harvest panel)."""
+    harvest panel). Defensive: every external call is wrapped so the
+    panel never 500s — failures degrade to empty state with a note."""
     store = get_store()
+    note: Optional[str] = None
 
     # Decide which FY string to use per market.
     today = date.today()
@@ -867,31 +869,54 @@ def capital_gains(
         "US": fy or current_fy("US", today),
     }
 
-    # Pull entries for each unique FY string we care about.
-    seen_fys = set(fy_by_market.values())
+    # Pull entries for each unique FY string we care about. SQLite errors
+    # (e.g. table missing after a schema migration hiccup) shouldn't crash
+    # the endpoint.
     all_entries: list[dict] = []
-    for f in seen_fys:
-        all_entries.extend(store.realized_gains_list(fy=f))
+    try:
+        seen_fys = set(fy_by_market.values())
+        for f in seen_fys:
+            all_entries.extend(store.realized_gains_list(fy=f))
+    except Exception as e:
+        note = f"Could not load realized-gain entries: {e}"
 
     currency_symbols: dict[str, str] = {"INR": "₹", "USD": "$", "AED": "د.إ"}
-    buckets = summarise_realized_gains(all_entries, currency_symbols=currency_symbols)
+    try:
+        buckets = summarise_realized_gains(all_entries, currency_symbols=currency_symbols)
+    except Exception as e:
+        buckets = []
+        note = note or f"Could not summarise: {e}"
 
     total_tax_by_cur: dict[str, float] = {}
     for b in buckets:
         sym = b.currency_symbol
         total_tax_by_cur[sym] = total_tax_by_cur.get(sym, 0.0) + b.est_tax_due_after_exempt
 
-    # Harvest offset: re-use the harvest panel's logic to get potential
-    # savings if the user realised all current unrealised losses.
-    harvest = tax_harvest()
-    harvest_offset_by_cur: dict[str, float] = dict(harvest.total_saving_by_currency)
+    # Harvest offset: re-use the harvest panel's logic. If the harvest
+    # endpoint itself fails (yfinance throttling, missing holdings cache,
+    # etc.) just skip the offset rather than failing the whole tally.
+    harvest_offset_by_cur: dict[str, float] = {}
+    try:
+        harvest = tax_harvest()
+        harvest_offset_by_cur = dict(harvest.total_saving_by_currency)
+    except Exception as e:
+        note = note or f"Harvest offset unavailable: {e}"
 
     net_tax_after: dict[str, float] = {}
     for sym, tax in total_tax_by_cur.items():
         offset = harvest_offset_by_cur.get(sym, 0.0)
         net_tax_after[sym] = max(0.0, round(tax - offset, 2))
 
-    return CapitalGainsOut(
+    # Build entry rows defensively — a single malformed row in the DB
+    # shouldn't take down the whole response.
+    entry_outs: list[RealizedGainOut] = []
+    for e in all_entries:
+        try:
+            entry_outs.append(RealizedGainOut(**e))
+        except Exception:
+            continue
+
+    out = CapitalGainsOut(
         fy_by_market=fy_by_market,
         buckets=[
             CapitalGainsBucketOut(
@@ -909,8 +934,11 @@ def capital_gains(
             )
             for b in buckets
         ],
-        entries=[RealizedGainOut(**e) for e in all_entries],
+        entries=entry_outs,
         total_tax_due_by_currency={k: round(v, 2) for k, v in total_tax_by_cur.items()},
         harvest_offset_by_currency={k: round(v, 2) for k, v in harvest_offset_by_cur.items()},
         net_tax_after_harvest_by_currency=net_tax_after,
     )
+    if note:
+        out.note = f"{note}. " + out.note
+    return out
