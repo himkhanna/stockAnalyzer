@@ -72,6 +72,65 @@ _DISCOVERY_LOCK = threading.Lock()
 _HISTORY_CACHE: dict[tuple[str, str, str], "object"] = {}
 _HISTORY_LOCK = threading.Lock()
 
+
+def _bulk_warm_history(items: list[tuple[str, str]]) -> None:
+    """Pre-populate _HISTORY_CACHE for many holdings in one yfinance call.
+
+    Falls back to per-ticker get_history for whatever the bulk missed.
+    Errors are swallowed — anything still missing just gets None when
+    _closes_for is called (which the attribute() helper handles by
+    falling back to cost basis with a 'since added' label).
+    """
+    today_iso = date.today().isoformat()
+    needed: list[tuple[str, str, "Market"]] = []
+    for sym, mkt in items:
+        key = (sym.upper(), mkt.upper(), today_iso)
+        with _HISTORY_LOCK:
+            if key in _HISTORY_CACHE:
+                continue
+        try:
+            m = Market.from_code(mkt)
+        except Exception:
+            continue
+        needed.append((sym, mkt, m))
+    if not needed:
+        return
+
+    try:
+        import yfinance as yf
+    except ImportError:
+        return
+
+    qualified_to_key: dict[str, tuple[str, str]] = {}
+    for sym, mkt_code, m in needed:
+        qualified_to_key[m.format_ticker(sym)] = (sym.upper(), mkt_code.upper())
+
+    try:
+        df = yf.download(
+            tickers=list(qualified_to_key.keys()),
+            period="1y",
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+            group_by="ticker",
+            threads=True,
+        )
+    except Exception:
+        df = None
+
+    if df is not None and not df.empty:
+        single = len(qualified_to_key) == 1
+        for qualified, key in qualified_to_key.items():
+            try:
+                closes = df["Close"].dropna() if single else df[qualified]["Close"].dropna()
+            except (KeyError, AttributeError):
+                closes = None
+            cache_key = (key[0], key[1], today_iso)
+            with _HISTORY_LOCK:
+                _HISTORY_CACHE[cache_key] = (
+                    closes if (closes is not None and not closes.empty) else None
+                )
+
 # Rough FX to convert currency buckets to a common unit so we can show
 # pct-of-total exposure. NOT used for any P&L calculation — purely for
 # the "% of portfolio" chart on the risk panel. Honest fallback if FX
@@ -625,42 +684,85 @@ def performance(
     if period not in _VALID_PERIODS:
         period = "ytd"
 
-    payload = get_dashboard()
-    rows = payload["rows"]
+    try:
+        payload = get_dashboard()
+    except Exception as e:
+        # Surface as an empty result with the message rather than 500-ing.
+        return PerformanceOut(
+            period=period,
+            buckets=[],
+            generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+            note=f"Could not load portfolio: {e}",
+        )
+
+    rows = payload.get("rows", [])
     store = get_store()
-    by_key = {(h.ticker.upper(), h.market_code.upper()): h for h in store.all()}
+    try:
+        by_key = {(h.ticker.upper(), h.market_code.upper()): h for h in store.all()}
+    except Exception:
+        by_key = {}
+
+    # Pre-warm the closes cache in one bulk yfinance call. The lifetime
+    # path doesn't need history; skip warmup in that case.
+    if period != "lifetime":
+        try:
+            tickers_needed: list[tuple[str, str]] = []
+            for r in rows:
+                c = r.card if hasattr(r, "card") else {}
+                if c.get("error"):
+                    continue
+                sym = (c.get("symbol") or "").upper()
+                mkt = (c.get("market_code") or "").upper()
+                if sym and mkt and (sym, mkt) in by_key:
+                    tickers_needed.append((sym, mkt))
+            if tickers_needed:
+                _bulk_warm_history(tickers_needed)
+        except Exception:
+            pass  # bulk warm is best-effort; per-row fallback still works
 
     inputs = []
     for r in rows:
-        c = r.card
-        if c.get("error"):
-            continue
-        sym = (c.get("symbol") or "").upper()
-        mkt = (c.get("market_code") or "").upper()
-        h = by_key.get((sym, mkt))
-        if h is None or h.shares <= 0:
-            continue
-        price = c.get("price")
-        if price is None or r.market_value is None:
+        try:
+            c = r.card if hasattr(r, "card") else {}
+            if c.get("error"):
+                continue
+            sym = (c.get("symbol") or "").upper()
+            mkt = (c.get("market_code") or "").upper()
+            h = by_key.get((sym, mkt))
+            if h is None or h.shares <= 0 or h.cost_basis is None:
+                continue
+            price = c.get("price")
+            mv = getattr(r, "market_value", None)
+            if price is None or mv is None:
+                continue
+
+            closes = None if period == "lifetime" else _closes_for(sym, mkt)
+
+            inputs.append((
+                h.ticker,
+                h.market_code,
+                h.currency,
+                c.get("currency_symbol") or h.currency,
+                float(h.shares),
+                float(h.cost_basis),
+                float(price),
+                float(mv),
+                h.date_added,
+                closes,
+            ))
+        except Exception:
+            # One bad row shouldn't take down the whole endpoint.
             continue
 
-        # lifetime path doesn't need history; skip the fetch.
-        closes = None if period == "lifetime" else _closes_for(sym, mkt)
-
-        inputs.append((
-            h.ticker,
-            h.market_code,
-            h.currency,
-            c.get("currency_symbol") or h.currency,
-            float(h.shares),
-            float(h.cost_basis),
-            float(price),
-            float(r.market_value),
-            h.date_added,
-            closes,
-        ))
-
-    buckets = attribute(inputs, period=period)  # type: ignore[arg-type]
+    try:
+        buckets = attribute(inputs, period=period)  # type: ignore[arg-type]
+    except Exception as e:
+        return PerformanceOut(
+            period=period,
+            buckets=[],
+            generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+            note=f"Computation failed: {e}",
+        )
 
     return PerformanceOut(
         period=period,

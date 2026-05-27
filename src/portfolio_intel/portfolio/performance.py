@@ -177,20 +177,27 @@ def _resolve_start_price(
 
     if closes is not None and len(closes) > 0:
         try:
-            idx = pd.to_datetime(closes.index).date  # type: ignore[union-attr]
-        except Exception:
-            idx = None
-
-        if idx is not None:
-            # Find the first close on/after effective_start.
-            mask = idx >= effective_start
-            if any(mask):
-                price = float(closes[mask].iloc[0])
+            # Coerce the index to a tz-naive DatetimeIndex of dates, then
+            # find the first close on/after effective_start. Wrapped in
+            # one try/except so any pandas/numpy edge case (tz-aware
+            # index, object-dtype, etc.) falls back cleanly to cost
+            # basis instead of 500-ing the endpoint.
+            di = pd.to_datetime(closes.index)
+            try:
+                di = di.tz_localize(None)  # noop if already naive
+            except (TypeError, AttributeError):
+                pass
+            target_ts = pd.Timestamp(effective_start)
+            sub = closes[di >= target_ts]
+            if len(sub) > 0:
+                price = float(sub.iloc[0])
                 label = (
                     f"since added ({date_added.isoformat()})"
                     if fell_back else period
                 )
                 return price, label
+        except Exception:
+            pass
 
     # No usable history — fall back to cost basis.
     return float(cost_basis), f"since added ({date_added.isoformat()})"
