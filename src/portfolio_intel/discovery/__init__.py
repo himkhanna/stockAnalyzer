@@ -6,6 +6,6 @@ filter and a ranking, not a new signal source. Per CLAUDE.md, every
 directional read here is backed by deterministic math + rules.
 """
 from .scanner import DiscoveredRow, scan_universe
-from .universes import UNIVERSES, universe_for
+from .universes import UNIVERSES, sector_for, universe_for
 
-__all__ = ["DiscoveredRow", "scan_universe", "UNIVERSES", "universe_for"]
+__all__ = ["DiscoveredRow", "scan_universe", "UNIVERSES", "sector_for", "universe_for"]

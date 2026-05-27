@@ -262,6 +262,7 @@ class DiscoveryRowOut(BaseModel):
     rsi: float | None = None
     trend: str | None = None
     sentiment_label: str | None = None
+    sector: str = "Other"
     rule_count: int = 0
     rule_names: list[str] = []
     error: str | None = None

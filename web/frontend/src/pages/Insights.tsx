@@ -1,5 +1,5 @@
 import { AlertTriangle, Bell, BellOff, CalendarClock, Check, CheckCheck, Compass, Loader2, RefreshCw, Trash2, TrendingDown, TrendingUp } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "../api";
@@ -162,23 +162,79 @@ function DiscoverMarketBlock({
   rows: DiscoveryRow[];
   universeSize: number;
 }) {
+  // Sector chip filter — toggle one or many. Empty = all.
+  const [activeSectors, setActiveSectors] = useState<Set<string>>(new Set());
+  const sectors = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of rows) counts.set(r.sector, (counts.get(r.sector) ?? 0) + 1);
+    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  }, [rows]);
+
+  const filtered = useMemo(() => {
+    if (activeSectors.size === 0) return rows;
+    return rows.filter((r) => activeSectors.has(r.sector));
+  }, [rows, activeSectors]);
+
+  const toggleSector = (s: string) => {
+    setActiveSectors((prev) => {
+      const next = new Set(prev);
+      if (next.has(s)) next.delete(s);
+      else next.add(s);
+      return next;
+    });
+  };
+
   return (
     <div className="card overflow-hidden">
       <div className="flex items-baseline justify-between px-4 py-2 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40">
         <div className="text-sm font-semibold uppercase tracking-wider">{market}</div>
         <div className="text-[11px] text-zinc-500">
-          {rows.length} of {universeSize} scored ≥ Buy
+          {filtered.length}
+          {activeSectors.size > 0 && ` (${rows.length} total)`} of {universeSize} scored ≥ Buy
         </div>
       </div>
-      {rows.length === 0 ? (
+
+      {sectors.length > 1 && (
+        <div className="px-4 py-2 border-b border-zinc-200 dark:border-zinc-800 flex flex-wrap gap-1.5">
+          {sectors.map(([sec, n]) => {
+            const active = activeSectors.has(sec);
+            return (
+              <button
+                key={sec}
+                onClick={() => toggleSector(sec)}
+                className={`pill text-[10px] cursor-pointer transition-all ${
+                  active
+                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                    : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+                }`}
+              >
+                {sec} <span className="opacity-60">{n}</span>
+              </button>
+            );
+          })}
+          {activeSectors.size > 0 && (
+            <button
+              onClick={() => setActiveSectors(new Set())}
+              className="pill text-[10px] bg-zinc-100 dark:bg-zinc-800 text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+            >
+              clear
+            </button>
+          )}
+        </div>
+      )}
+
+      {filtered.length === 0 ? (
         <div className="p-4 text-xs text-zinc-500">
-          No Buy-rated names in this market right now.
+          {rows.length === 0
+            ? "No Buy-rated names in this market right now."
+            : "No names match the selected sector(s)."}
         </div>
       ) : (
         <table className="w-full text-xs">
           <thead className="text-zinc-500 uppercase tracking-wider text-[10px]">
             <tr>
               <th className="text-left px-3 py-2">Ticker</th>
+              <th className="text-left px-2 py-2">Sector</th>
               <th className="text-right px-2 py-2">Price</th>
               <th className="text-right px-2 py-2">Day</th>
               <th className="text-left px-2 py-2">Signal</th>
@@ -186,49 +242,87 @@ function DiscoverMarketBlock({
               <th className="text-left px-2 py-2">Trend</th>
               <th className="text-left px-2 py-2">Rules</th>
               <th className="text-left px-2 py-2">News</th>
+              <th className="w-20"></th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={`${r.symbol}.${r.market}`} className="border-t border-zinc-200 dark:border-zinc-800">
-                <td className="px-3 py-1.5">
-                  <span className="font-semibold">{r.symbol}</span>
-                </td>
-                <td className="px-2 py-1.5 text-right tabular-nums font-mono">
-                  {r.price != null ? `${r.currency_symbol}${r.price.toFixed(2)}` : "—"}
-                </td>
-                <td
-                  className={`px-2 py-1.5 text-right tabular-nums ${
-                    (r.change_pct ?? 0) > 0
-                      ? "text-bull-500"
-                      : (r.change_pct ?? 0) < 0
-                      ? "text-bear-500"
-                      : "text-zinc-500"
-                  }`}
-                >
-                  {r.change_pct != null ? fmtPct(r.change_pct, 1) : "—"}
-                </td>
-                <td className="px-2 py-1.5">
-                  <SignalPill label={r.score_label} score={r.score_value} compact />
-                </td>
-                <td className="px-2 py-1.5 text-right tabular-nums">
-                  {r.rsi != null ? r.rsi.toFixed(0) : "—"}
-                </td>
-                <td className="px-2 py-1.5 text-zinc-600 dark:text-zinc-400">
-                  {r.trend ?? "—"}
-                </td>
-                <td className="px-2 py-1.5 text-zinc-500">
-                  {r.rule_count > 0 ? r.rule_names.slice(0, 2).join(" · ") : "—"}
-                </td>
-                <td className="px-2 py-1.5 text-zinc-500">
-                  {r.sentiment_label ?? "—"}
-                </td>
-              </tr>
+            {filtered.map((r) => (
+              <DiscoveryTableRow key={`${r.symbol}.${r.market}`} row={r} />
             ))}
           </tbody>
         </table>
       )}
     </div>
+  );
+}
+
+function DiscoveryTableRow({ row: r }: { row: DiscoveryRow }) {
+  const qc = useQueryClient();
+  const [added, setAdded] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const add = useMutation({
+    mutationFn: () =>
+      api.addWatchlist({ ticker: r.symbol, market: r.market, note: "from Discover" }),
+    onSuccess: () => {
+      setAdded(true);
+      setErr(null);
+      qc.invalidateQueries({ queryKey: ["watchlist"] });
+      qc.invalidateQueries({ queryKey: ["insights"] });
+    },
+    onError: (e: Error) => {
+      // 409 / duplicate is still useful to surface as "already on list"
+      const msg = e.message.toLowerCase();
+      if (msg.includes("already") || msg.includes("unique") || msg.includes("conflict")) {
+        setAdded(true);
+        setErr(null);
+      } else {
+        setErr(e.message);
+      }
+    },
+  });
+
+  return (
+    <tr className="border-t border-zinc-200 dark:border-zinc-800">
+      <td className="px-3 py-1.5">
+        <span className="font-semibold">{r.symbol}</span>
+      </td>
+      <td className="px-2 py-1.5 text-[11px] text-zinc-500">{r.sector}</td>
+      <td className="px-2 py-1.5 text-right tabular-nums font-mono">
+        {r.price != null ? `${r.currency_symbol}${r.price.toFixed(2)}` : "—"}
+      </td>
+      <td
+        className={`px-2 py-1.5 text-right tabular-nums ${
+          (r.change_pct ?? 0) > 0
+            ? "text-bull-500"
+            : (r.change_pct ?? 0) < 0
+            ? "text-bear-500"
+            : "text-zinc-500"
+        }`}
+      >
+        {r.change_pct != null ? fmtPct(r.change_pct, 1) : "—"}
+      </td>
+      <td className="px-2 py-1.5">
+        <SignalPill label={r.score_label} score={r.score_value} compact />
+      </td>
+      <td className="px-2 py-1.5 text-right tabular-nums">
+        {r.rsi != null ? r.rsi.toFixed(0) : "—"}
+      </td>
+      <td className="px-2 py-1.5 text-zinc-600 dark:text-zinc-400">{r.trend ?? "—"}</td>
+      <td className="px-2 py-1.5 text-zinc-500">
+        {r.rule_count > 0 ? r.rule_names.slice(0, 2).join(" · ") : "—"}
+      </td>
+      <td className="px-2 py-1.5 text-zinc-500">{r.sentiment_label ?? "—"}</td>
+      <td className="px-2 py-1.5">
+        <button
+          className="text-[11px] px-2 py-0.5 rounded border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-50"
+          onClick={() => add.mutate()}
+          disabled={added || add.isPending}
+          title={err ?? "Add to watchlist"}
+        >
+          {add.isPending ? "…" : added ? "✓ watching" : "+ Watch"}
+        </button>
+      </td>
+    </tr>
   );
 }
 

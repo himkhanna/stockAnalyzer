@@ -334,6 +334,7 @@ export interface DiscoveryRow {
   rsi: number | null;
   trend: string | null;
   sentiment_label: string | null;
+  sector: string;
   rule_count: number;
   rule_names: string[];
   error: string | null;

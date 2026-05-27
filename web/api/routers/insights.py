@@ -387,6 +387,7 @@ def discover(
                     rsi=d.rsi,
                     trend=d.trend,
                     sentiment_label=d.sentiment_label,
+                    sector=d.sector,
                     rule_count=d.rule_count,
                     rule_names=d.rule_names,
                     error=d.error,

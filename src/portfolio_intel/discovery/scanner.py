@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Callable, Iterable, Optional
 
 from ..markets import Market
-from .universes import universe_for
+from .universes import sector_for, universe_for
 
 
 @dataclass
@@ -29,6 +29,7 @@ class DiscoveredRow:
     rsi: Optional[float]
     trend: Optional[str]
     sentiment_label: Optional[str]
+    sector: str
     rule_count: int
     rule_names: list[str]
     error: Optional[str] = None
@@ -67,6 +68,7 @@ def scan_universe(
                 price=None, change_pct=None,
                 score_value=None, score_label=None,
                 rsi=None, trend=None, sentiment_label=None,
+                sector=sector_for(sym, market.code),
                 rule_count=0, rule_names=[],
                 error=str(e)[:120],
             ))
@@ -91,6 +93,7 @@ def scan_universe(
             rsi=card.get("rsi"),
             trend=card.get("trend"),
             sentiment_label=card.get("sentiment_label"),
+            sector=sector_for(card.get("symbol", sym), market.code),
             rule_count=int(card.get("rule_count", 0)),
             rule_names=list(card.get("rule_names") or [])[:3],
         ))
