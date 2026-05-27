@@ -1002,14 +1002,32 @@ function WatchlistSection({ scanned }: { scanned: any[] }) {
       qc.invalidateQueries({ queryKey: ["insights"] });
     },
   });
+  const refresh = useMutation({
+    mutationFn: () => api.getInsights(),
+    onSuccess: (data) => qc.setQueryData(["insights"], data),
+  });
 
   return (
     <section className="space-y-3">
       <div className="flex items-baseline justify-between">
         <h2 className="text-base font-bold">Watchlist</h2>
-        <span className="text-xs text-zinc-500">
-          Tickers you don't own, scanned with the same pipeline · {scanned.length}
-        </span>
+        <div className="flex items-center gap-3 text-xs text-zinc-500">
+          <span>
+            Tickers you don't own, scanned with the same pipeline · {scanned.length}
+          </span>
+          <button
+            className="btn-ghost text-xs"
+            onClick={() => refresh.mutate()}
+            disabled={refresh.isPending || !list.data || list.data.length === 0}
+            title="Re-score every watchlist entry against fresh data"
+          >
+            {refresh.isPending ? (
+              <><Loader2 size={12} className="animate-spin" /> Rescoring…</>
+            ) : (
+              <><RefreshCw size={12} /> Rescan signals</>
+            )}
+          </button>
+        </div>
       </div>
 
       <form
