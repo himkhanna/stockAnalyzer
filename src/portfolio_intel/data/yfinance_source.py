@@ -125,7 +125,12 @@ class YFinanceSource(DataSource):
         try:
             df = yf.download(
                 tickers=list(qualified_to_key.keys()),
-                period="2d",
+                # Use 5d (not 2d) — yfinance during market hours sometimes
+                # returns just the current intraday row, which would leave
+                # `previous_close` empty for the day-change calc. 5d
+                # guarantees at least one prior session is available even
+                # if today's bar hasn't finalised.
+                period="5d",
                 interval="1d",
                 auto_adjust=False,
                 progress=False,
@@ -149,6 +154,16 @@ class YFinanceSource(DataSource):
             price = float(closes.iloc[-1])
             prev = float(closes.iloc[-2]) if len(closes) >= 2 else None
             market = market_by_qualified[qualified]
+            # When yfinance still didn't give us a previous close (one-row
+            # response or weird MultiIndex), try fast_info as a fallback —
+            # the per-ticker cost is tolerable here because we only hit it
+            # for the affected rows, not the whole portfolio.
+            if prev is None:
+                try:
+                    t = yf.Ticker(qualified)
+                    prev = _coerce_float(getattr(t.fast_info, "previous_close", None))
+                except Exception:
+                    prev = None
             out[key] = Quote(
                 symbol=key[0],
                 market_code=market.code,

@@ -19,6 +19,9 @@ export interface LiveBucket {
   today_pnl: number | null;
   today_pnl_pct: number | null;
   n_positions: number;
+  // How many of n_positions actually contributed to today_pnl (had
+  // either a live quote with previous_close, or a cached change_pct).
+  n_today_covered: number;
 }
 
 interface Props {
@@ -67,13 +70,22 @@ export function KPIStrip({ buckets, signalCounts, overweight, isLive, liveAsOf }
                     ? "bg-bull-50 text-bull-600 dark:bg-bull-900/30 dark:text-bull-300"
                     : "bg-bear-50 text-bear-600 dark:bg-bear-900/30 dark:text-bear-300",
                 )}
-                title="Today's P/L (since previous close)"
+                title={
+                  b.n_today_covered < b.n_positions
+                    ? `Today's P/L from ${b.n_today_covered}/${b.n_positions} positions (others missing price/prev-close data)`
+                    : "Today's P/L since previous close (all positions covered)"
+                }
               >
                 today {todayUp ? "+" : ""}
                 {fmtCurrency(b.today_pnl, b.currency_symbol, 0)}
                 {b.today_pnl_pct != null && (
                   <span className="opacity-70">
                     {" "}({fmtPct(b.today_pnl_pct)})
+                  </span>
+                )}
+                {b.n_today_covered < b.n_positions && (
+                  <span className="opacity-60 ml-0.5">
+                    · {b.n_today_covered}/{b.n_positions}
                   </span>
                 )}
               </span>

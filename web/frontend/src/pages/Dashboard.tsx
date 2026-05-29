@@ -176,6 +176,7 @@ interface BucketAcc {
   pnl: number;
   today_pnl: number;
   n_positions: number;
+  n_today_covered: number;
   _hasToday: boolean;
 }
 
@@ -196,9 +197,25 @@ function computeLiveBuckets(
     const market_value = price * r.shares;
     const cost_total = r.cost_basis * r.shares;
     const pnl = market_value - cost_total;
-    // "Today" only when we actually have a live quote with a change.
-    const today_pnl = live && live.change != null ? live.change * r.shares : 0;
-    const has_today = live != null && live.change != null;
+
+    // Today's row contribution: prefer the live overlay's change × shares
+    // (uses live - prev_close). When the live quote is missing or doesn't
+    // carry a change yet, fall back to the cached row's day-change% so
+    // the bucket total still reflects every covered position. Rows where
+    // neither path has a number contribute 0 and don't count toward
+    // "covered" — the strip will surface that as a partial badge.
+    let today_pnl = 0;
+    let has_today = false;
+    if (live && live.change != null) {
+      today_pnl = live.change * r.shares;
+      has_today = true;
+    } else if (r.change_pct != null && r.price != null) {
+      // r.change_pct = (price - prev) / prev * 100  →  prev = price / (1 + change_pct/100)
+      const prev = r.price / (1 + r.change_pct / 100);
+      const dayChange = r.price - prev;
+      today_pnl = dayChange * r.shares;
+      has_today = true;
+    }
 
     const bucket: BucketAcc = byCurrency.get(r.currency) ?? {
       currency: r.currency,
@@ -208,6 +225,7 @@ function computeLiveBuckets(
       pnl: 0,
       today_pnl: 0,
       n_positions: 0,
+      n_today_covered: 0,
       _hasToday: false,
     };
     bucket.market_value += market_value;
@@ -215,6 +233,7 @@ function computeLiveBuckets(
     bucket.pnl += pnl;
     bucket.today_pnl += today_pnl;
     bucket.n_positions += 1;
+    if (has_today) bucket.n_today_covered += 1;
     bucket._hasToday = bucket._hasToday || has_today;
     byCurrency.set(r.currency, bucket);
   }
@@ -235,6 +254,7 @@ function computeLiveBuckets(
       today_pnl: b._hasToday ? b.today_pnl : null,
       today_pnl_pct: b._hasToday ? today_pnl_pct : null,
       n_positions: b.n_positions,
+      n_today_covered: b.n_today_covered,
     });
   }
   return out;
