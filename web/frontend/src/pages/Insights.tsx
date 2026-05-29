@@ -1,6 +1,6 @@
 import { AlertTriangle, Bell, BellOff, CalendarClock, Check, CheckCheck, Compass, Loader2, RefreshCw, Trash2, TrendingDown, TrendingUp } from "lucide-react";
 import { useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsFetching, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "../api";
 import { EmptyState } from "../components/EmptyState";
@@ -36,12 +36,26 @@ export function InsightsPage() {
     refetchOnMount: false,
   });
 
-  const refresh = useMutation({
-    mutationFn: () => api.getInsights(true),
-    onSuccess: (data) => qc.setQueryData(["insights"], data),
-  });
+  // useIsFetching tracks in-flight queries by key — survives component
+  // unmount, so the spinner state reflects the refresh even if the user
+  // tab-switched mid-flight.
+  const isRefreshing = useIsFetching({ queryKey: ["insights"] }) > 0;
 
-  if (q.isLoading || (refresh.isPending && !q.data)) {
+  // Use fetchQuery so the request is owned by the query cache, not the
+  // component. If the user clicks Refresh and switches tabs, the fetch
+  // continues in the background and the cache updates atomically when
+  // it returns — coming back to Insights shows the fresh data.
+  const refresh = () => {
+    qc.fetchQuery({
+      queryKey: ["insights"],
+      queryFn: () => api.getInsights(true),
+      staleTime: 0,
+    }).catch(() => {
+      // Errors land in React Query state automatically; nothing to do.
+    });
+  };
+
+  if (q.isLoading || (isRefreshing && !q.data)) {
     return (
       <div className="flex items-center gap-2 text-zinc-500 py-12 justify-center">
         <Loader2 className="animate-spin" size={16} /> Building insights…
@@ -67,8 +81,8 @@ export function InsightsPage() {
   return (
     <InsightsLoaded
       data={d}
-      onRefresh={() => refresh.mutate()}
-      refreshing={refresh.isPending}
+      onRefresh={refresh}
+      refreshing={isRefreshing}
     />
   );
 }
